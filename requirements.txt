@@ -1,15 +1,9 @@
-# ======================================
-# INSTALLATION INSTRUCTIONS:
-# To install with pre-built wheels (recommended for Windows):
-# pip install -r requirements.txt --only-binary=:all:
-# ======================================
-
-# Core requirements - versions selected for reliable pre-built wheels
+# Core requirements
 PyMuPDF==1.21.1  # PDF processing
 transformers==4.30.0  # For transformer models
-torch==2.0.1  # PyTorch for transformer models (specific version with good wheel support)
+torch>=2.0.0  # PyTorch for transformer models
 nltk==3.8.1  # Natural language processing
-numpy==1.24.3  # Numerical processing (specific version with good wheel support)
+numpy>=1.24.0  # Numerical processing
 chromadb==0.4.6  # Vector database
 sentence-transformers==2.2.2  # For embeddings
 
@@ -21,12 +15,10 @@ python-multipart==0.0.6  # For handling file uploads
 # Testing
 pytest==7.3.1  # Testing framework
 
-# spaCy - NLP library with good pre-built wheel support
-spacy==3.5.3  # Advanced NLP capabilities
-
 # Optional: Add for production
 # gunicorn==20.1.0  # Production WSGI server
 # prometheus-client==0.16.0  # Metrics
 
-# Optional: Additional capabilities
+# Optional: Additional NLP capabilities
+# spacy==3.5.3  # Advanced NLP
 # langchain==0.0.200  # Framework for LLM apps
