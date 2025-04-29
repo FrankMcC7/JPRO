@@ -10,10 +10,24 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, Union
 
+# Configure cache directory for models
+from pathlib import Path
+HOME_DIR = Path.home()
+CACHE_DIR = HOME_DIR / ".cache" / "huggingface" / "hub"
+SENTENCE_TRANSFORMER_DIR = CACHE_DIR / "models--sentence-transformers--all-MiniLM-L6-v2"
+CROSS_ENCODER_DIR = CACHE_DIR / "models--cross-encoder--ms-marco-MiniLM-L-6-v2"
+
+# Create cache directories if they don't exist
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+SENTENCE_TRANSFORMER_DIR.mkdir(parents=True, exist_ok=True)
+CROSS_ENCODER_DIR.mkdir(parents=True, exist_ok=True)
+
 # Force libraries to work in offline mode
 os.environ['TRANSFORMERS_OFFLINE'] = '1'
 os.environ['HF_DATASETS_OFFLINE'] = '1'
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+os.environ['TRANSFORMERS_CACHE'] = str(CACHE_DIR)
+os.environ['HF_HOME'] = str(CACHE_DIR)
 
 # Import remaining libraries
 import fitz  # PyMuPDF for better PDF extraction
@@ -35,20 +49,14 @@ logger = logging.getLogger(__name__)
 
 def verify_models_exist():
     """Verify that the required models exist in the offline cache."""
-    home_dir = Path.home()
-    cache_dir = home_dir / ".cache" / "huggingface" / "hub"
-    
-    sentence_transformer_dir = cache_dir / "models--sentence-transformers--all-MiniLM-L6-v2"
-    cross_encoder_dir = cache_dir / "models--cross-encoder--ms-marco-MiniLM-L-6-v2"
-    
     models_exist = True
     
-    if not sentence_transformer_dir.exists():
-        logger.error(f"Sentence transformer model not found in cache! Expected location: {sentence_transformer_dir}")
+    if not SENTENCE_TRANSFORMER_DIR.exists():
+        logger.error(f"Sentence transformer model not found in cache! Expected location: {SENTENCE_TRANSFORMER_DIR}")
         models_exist = False
         
-    if not cross_encoder_dir.exists():
-        logger.error(f"Cross-encoder model not found in cache! Expected location: {cross_encoder_dir}")
+    if not CROSS_ENCODER_DIR.exists():
+        logger.error(f"Cross-encoder model not found in cache! Expected location: {CROSS_ENCODER_DIR}")
         models_exist = False
     
     if models_exist:
@@ -156,10 +164,23 @@ class DocumentProcessor:
         self.metadata_path = self.storage_dir / "metadata.json"
         self.metadata = self._load_metadata()
         
-        # Initialize sentence embedding model - configured for offline use
+        # Initialize sentence embedding model with explicit cache location
         logger.info("Loading sentence transformer model from local cache...")
-        self.embedding_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', 
-                                                  use_auth_token=False)
+        try:
+            self.embedding_model = SentenceTransformer(
+                'sentence-transformers/all-MiniLM-L6-v2', 
+                use_auth_token=False,
+                cache_folder=str(SENTENCE_TRANSFORMER_DIR)
+            )
+        except Exception as e:
+            logger.error(f"Error loading sentence transformer model: {e}")
+            # Fall back to allow download if needed
+            logger.warning("Attempting to download model - this should only happen once")
+            self.embedding_model = SentenceTransformer(
+                'sentence-transformers/all-MiniLM-L6-v2', 
+                use_auth_token=False,
+                local_files_only=False
+            )
         
         # Initialize vector database
         self.vector_db = VectorDatabase()
@@ -914,8 +935,21 @@ class LocalAnswerGenerator:
     def __init__(self):
         # Use a cross-encoder model for relevance scoring - configured for offline use
         logger.info("Loading cross-encoder model from local cache...")
-        self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', 
-                                         use_auth_token=False)
+        try:
+            self.cross_encoder = CrossEncoder(
+                'cross-encoder/ms-marco-MiniLM-L-6-v2', 
+                use_auth_token=False,
+                cache_folder=str(CROSS_ENCODER_DIR)
+            )
+        except Exception as e:
+            logger.error(f"Error loading cross-encoder model: {e}")
+            # Fall back to allow download if needed
+            logger.warning("Attempting to download model - this should only happen once")
+            self.cross_encoder = CrossEncoder(
+                'cross-encoder/ms-marco-MiniLM-L-6-v2', 
+                use_auth_token=False,
+                local_files_only=False
+            )
         
     def generate_answer(self, query: str, search_results: List[Dict]) -> dict:
         """
