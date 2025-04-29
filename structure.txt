@@ -1,0 +1,25 @@
+.cache/
+└── huggingface/
+    └── hub/
+        ├── models--sentence-transformers--all-MiniLM-L6-v2/
+        │   └── snapshots/
+        │       └── xxxxxx/  (create a folder with any name, e.g. "latest")
+        │           ├── config.json
+        │           ├── data_config.json
+        │           ├── modules.json
+        │           ├── pytorch_model.bin
+        │           ├── sentence_bert_config.json
+        │           ├── special_tokens_map.json
+        │           ├── tokenizer_config.json
+        │           ├── tokenizer.json
+        │           └── vocab.txt
+        │
+        └── models--cross-encoder--ms-marco-MiniLM-L-6-v2/
+            └── snapshots/
+                └── xxxxxx/  (create a folder with any name, e.g. "latest")
+                    ├── config.json
+                    ├── pytorch_model.bin
+                    ├── special_tokens_map.json
+                    ├── tokenizer_config.json
+                    ├── tokenizer.json
+                    └── vocab.txt
