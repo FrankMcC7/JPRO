@@ -1,0 +1,11 @@
+{
+  "__version__": {
+    "sentence_transformers": "2.6.1",
+    "transformers": "4.40.0",
+    "pytorch": "2.2.2"
+  },
+  "modules": {
+    "0": "0_Transformer",
+    "1": "1_Pooling"
+  }
+}
