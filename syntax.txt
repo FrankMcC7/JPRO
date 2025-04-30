@@ -1,0 +1,6 @@
+# with curl (no AWS creds needed):
+curl -O https://s3.amazonaws.com/models.huggingface.co/sentence-transformers/all-MiniLM-L6-v2/config.json  
+curl -O https://s3.amazonaws.com/models.huggingface.co/sentence-transformers/all-MiniLM-L6-v2/pytorch_model.bin  
+
+# or, if you have AWS CLI configured (public reads are allowed):
+aws s3 cp s3://models.huggingface.co/sentence-transformers/all-MiniLM-L6-v2/ ./all-MiniLM-L6-v2/ --recursive
