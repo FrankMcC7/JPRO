@@ -4,3 +4,7 @@ curl -O https://s3.amazonaws.com/models.huggingface.co/sentence-transformers/all
 
 # or, if you have AWS CLI configured (public reads are allowed):
 aws s3 cp s3://models.huggingface.co/sentence-transformers/all-MiniLM-L6-v2/ ./all-MiniLM-L6-v2/ --recursive
+
+
+pip install hf_transfer  
+hf_transfer download https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/pytorch_model.bin
