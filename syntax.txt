@@ -8,3 +8,5 @@ aws s3 cp s3://models.huggingface.co/sentence-transformers/all-MiniLM-L6-v2/ ./a
 
 pip install hf_transfer  
 hf_transfer download https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/pytorch_model.bin
+
+git clone git@hf.co:sentence-transformers/all-MiniLM-L6-v2.git
