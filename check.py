@@ -1,322 +1,90 @@
-I'll create a comprehensive Python script that performs multiple diagnostic tests to identify why you can't access the internet in your Python script. This will help us pinpoint the exact issue.
+Based on the diagnostic results in the image, it looks like your issue is indeed proxy-related. Let's test this out by modifying your original script to implement the recommended solution.
+
+Here's an updated version of your script that explicitly disables proxies:
 
 ```python
 import requests
-import socket
-import subprocess
-import platform
-import sys
-import os
-import time
 
-def print_header(message):
-    print("\n" + "=" * 60)
-    print(f" {message} ".center(60, "="))
-    print("=" * 60)
-
-def check_python_version():
-    print_header("Python Version Check")
-    print(f"Python Version: {platform.python_version()}")
-    print(f"Python Executable: {sys.executable}")
-    print(f"Requests library version: {requests.__version__}")
-
-def check_system_info():
-    print_header("System Information")
-    print(f"Operating System: {platform.system()} {platform.version()}")
-    print(f"Machine: {platform.machine()}")
-    
-    if platform.system() == "Windows":
-        try:
-            output = subprocess.check_output("ipconfig", shell=True, text=True)
-            print("\nNetwork Configuration (ipconfig):")
-            for line in output.split('\n'):
-                if any(x in line.lower() for x in ["ipv4", "subnet", "gateway", "dns"]):
-                    print(line.strip())
-        except Exception as e:
-            print(f"Error getting network info: {e}")
-
-def check_dns_resolution():
-    print_header("DNS Resolution Test")
-    domains = ["www.google.com", "www.microsoft.com", "www.amazon.com"]
-    
-    for domain in domains:
-        try:
-            ip = socket.gethostbyname(domain)
-            print(f"✅ Successfully resolved {domain} to {ip}")
-        except socket.gaierror as e:
-            print(f"❌ Failed to resolve {domain}: {e}")
-    
-    # Check if DNS servers are reachable
-    if platform.system() == "Windows":
-        try:
-            output = subprocess.check_output("nslookup www.google.com", shell=True, text=True)
-            print("\nDetailed DNS lookup:")
-            print(output)
-        except Exception as e:
-            print(f"Error running nslookup: {e}")
-
-def ping_test():
-    print_header("Ping Test")
-    host = "www.google.com"
-    
-    ping_param = "-n" if platform.system().lower() == "windows" else "-c"
-    command = f"ping {ping_param} 3 {host}"
-    
+def check_internet_connection():
     try:
-        output = subprocess.check_output(command, shell=True, text=True)
-        print(f"Ping to {host} successful:")
-        print(output)
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Ping to {host} failed: {e}")
-        return False
-
-def check_proxy_settings():
-    print_header("Proxy Settings Check")
-    
-    # Check environment variables for proxy settings
-    proxies = {
-        'http': os.environ.get('HTTP_PROXY'),
-        'https': os.environ.get('HTTPS_PROXY'),
-    }
-    
-    print("Environment proxy settings:")
-    for proxy_type, value in proxies.items():
-        if value:
-            print(f"✅ {proxy_type.upper()} proxy is set to: {value}")
-        else:
-            print(f"❌ No {proxy_type.upper()} proxy set in environment")
-    
-    # Check if system uses a proxy
-    try:
-        if platform.system() == "Windows":
-            import winreg
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
-                                 r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
-            proxy_enable, _ = winreg.QueryValueEx(key, "ProxyEnable")
-            if proxy_enable:
-                proxy_server, _ = winreg.QueryValueEx(key, "ProxyServer")
-                print(f"✅ System proxy enabled: {proxy_server}")
-            else:
-                print("❌ System proxy is disabled")
-            winreg.CloseKey(key)
-    except Exception as e:
-        print(f"Could not check system proxy settings: {e}")
-
-def check_firewall():
-    print_header("Firewall Check")
-    
-    if platform.system() == "Windows":
-        try:
-            output = subprocess.check_output("netsh advfirewall show allprofiles", shell=True, text=True)
-            print("Firewall status:")
-            for line in output.split('\n'):
-                if "State" in line:
-                    print(line.strip())
-        except Exception as e:
-            print(f"Error checking firewall: {e}")
-    else:
-        print("Firewall check not implemented for this OS")
-
-def test_connection_with_different_headers():
-    print_header("Testing with Different User-Agents")
-    
-    url = "https://www.google.com"
-    user_agents = [
-        None,  # Default requests user-agent
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15",
-        "Python/requests"
-    ]
-    
-    for agent in user_agents:
-        headers = {'User-Agent': agent} if agent else {}
-        agent_display = agent or "Default"
+        # Define empty proxies dict to explicitly disable any system proxies
+        proxies = {'http': None, 'https': None}
         
-        try:
-            print(f"\nTrying with User-Agent: {agent_display}")
-            response = requests.get(url, headers=headers, timeout=5)
-            print(f"✅ Success! Status code: {response.status_code}")
+        # Test connection to a reliable website with proxies disabled
+        print("Attempting to connect to Google...")
+        response = requests.get("https://www.google.com", proxies=proxies, timeout=5)
+        print(f"Response status code: {response.status_code}")
+        
+        if response.status_code == 200:
+            print("✅ Internet connection is active.")
             return True
-        except Exception as e:
-            print(f"❌ Failed: {e}")
-    
-    return False
-
-def check_multiple_sites():
-    print_header("Testing Multiple Websites")
-    
-    sites = [
-        "https://www.google.com",
-        "https://www.bing.com",
-        "https://httpbin.org/get",
-        "https://api.github.com",
-        "https://www.example.com"
-    ]
-    
-    for site in sites:
-        try:
-            print(f"Trying to connect to {site}...")
-            response = requests.get(site, timeout=5)
-            print(f"✅ Success! Response from {site}: {response.status_code}")
-            return True
-        except Exception as e:
-            print(f"❌ Failed to connect to {site}. Error: {e}")
-    
-    return False
-
-def test_with_proxy_disabled():
-    print_header("Testing with Explicit Empty Proxy")
-    
-    try:
-        print("Trying connection with explicitly empty proxy...")
-        response = requests.get("https://www.google.com", proxies={"http": None, "https": None}, timeout=5)
-        print(f"✅ Success! Status code: {response.status_code}")
-        return True
-    except Exception as e:
-        print(f"❌ Failed: {e}")
-        return False
-
-def check_ssl():
-    print_header("SSL/TLS Check")
-    
-    import ssl
-    print(f"OpenSSL Version: {ssl.OPENSSL_VERSION}")
-    
-    try:
-        context = ssl.create_default_context()
-        with socket.create_connection(("www.google.com", 443)) as sock:
-            with context.wrap_socket(sock, server_hostname="www.google.com") as ssock:
-                print(f"✅ SSL connection successful")
-                print(f"SSL Version: {ssock.version()}")
-                print(f"Cipher: {ssock.cipher()[0]}")
-                return True
-    except Exception as e:
-        print(f"❌ SSL connection failed: {e}")
-        return False
-
-def provide_diagnosis(test_results):
-    print_header("DIAGNOSIS")
-    
-    if test_results["dns"]:
-        print("✅ DNS resolution is working correctly.")
-    else:
-        print("❌ DNS resolution is failing. This could be due to:")
-        print("   - Misconfigured network settings")
-        print("   - DNS server issues")
-        print("   - Firewall blocking DNS queries")
-    
-    if test_results["ping"]:
-        print("✅ ICMP (Ping) is working correctly.")
-    else:
-        print("❌ Ping is failing. This could be due to:")
-        print("   - Firewall blocking ICMP packets")
-        print("   - Network connectivity issues")
-    
-    if test_results["ssl"]:
-        print("✅ SSL/TLS handshake is working correctly.")
-    else:
-        print("❌ SSL/TLS handshake is failing. This could be due to:")
-        print("   - Outdated SSL libraries")
-        print("   - Security software interference")
-        print("   - TLS version incompatibility")
-    
-    if test_results["requests"]:
-        print("✅ HTTP requests with requests library are working.")
-    else:
-        print("❌ HTTP requests with requests library are failing. This could be due to:")
-        print("   - Proxy settings issues")
-        print("   - User-Agent filtering")
-        print("   - Firewall/Antivirus blocking Python connections")
-    
-    print("\nRECOMMENDATIONS:")
-    if not test_results["requests"]:
-        if test_results["dns"] and test_results["ping"] and test_results["ssl"]:
-            print("1. Your network is working, but Python requests are being blocked.")
-            print("   - Try running Python as administrator")
-            print("   - Check antivirus/firewall settings")
-            print("   - Configure proxy settings explicitly in your scripts")
-            print("   - Update your requests library: pip install --upgrade requests")
-        elif not test_results["proxy_disabled"]:
-            print("1. Your issue appears to be proxy-related.")
-            print("   - Add these lines to your scripts:")
-            print("     proxies = {'http': None, 'https': None}")
-            print("     response = requests.get(url, proxies=proxies)")
         else:
-            print("1. You have a fundamental network connectivity issue with Python.")
-            print("   - Check if Python is allowed in your firewall")
-            print("   - Verify SSL certificates are up to date")
-    else:
-        print("1. Your network appears to be working correctly with Python.")
-        print("   - The issue might be specific to the URL you're trying to access")
-        print("   - Try using a different URL or checking if the site requires specific headers")
-    
-    print("\nRun this diagnostic script whenever you're having connectivity issues in Python.")
+            print(f"⚠ Internet connection test failed with status code: {response.status_code}")
+            return False
+    except requests.ConnectionError as e:
+        print(f"❌ No internet connection. Error: {e}")
+        return False
+    except requests.Timeout:
+        print("❌ Internet connection timed out.")
+        return False
 
-def main():
-    print_header("PYTHON INTERNET CONNECTIVITY DIAGNOSTIC TOOL")
-    print("Running comprehensive tests to diagnose connectivity issues...")
-    
-    # Store test results
-    results = {
-        "dns": False,
-        "ping": False,
-        "ssl": False,
-        "user_agent": False,
-        "multiple_sites": False,
-        "proxy_disabled": False,
-        "requests": False
-    }
-    
-    # Run all tests
-    check_python_version()
-    check_system_info()
-    
-    print("\nRunning network tests:")
-    check_dns_resolution()
-    results["dns"] = True  # Assume success unless explicitly failed in function
-    
-    results["ping"] = ping_test()
-    check_proxy_settings()
-    check_firewall()
-    
-    results["ssl"] = check_ssl()
-    results["user_agent"] = test_connection_with_different_headers()
-    results["multiple_sites"] = check_multiple_sites()
-    results["proxy_disabled"] = test_with_proxy_disabled()
-    
-    # Overall HTTP request success
-    results["requests"] = any([results["user_agent"], results["multiple_sites"], results["proxy_disabled"]])
-    
-    # Provide diagnosis
-    provide_diagnosis(results)
+def check_web_scraping_capability():
+    try:
+        # Define empty proxies dict to explicitly disable any system proxies
+        proxies = {'http': None, 'https': None}
+        
+        # Test scraping capability by accessing a public website
+        url = "https://httpbin.org/get"  # A public API for testing HTTP requests
+        
+        # Same user agent as in your original code
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (XHTML, like Gecko)'
+        }
+        
+        # Add proxies parameter to disable system proxies
+        response = requests.get(url, headers=headers, proxies=proxies, timeout=5)
+        
+        if response.status_code == 200:
+            print("✅ Web scraping is possible.")
+            print("Response preview:", response.json())
+            return True
+        else:
+            print(f"⚠ Web scraping test failed with status code: {response.status_code}")
+            return False
+    except requests.ConnectionError:
+        print("❌ Unable to connect to the test website.")
+        return False
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"Error running diagnostic tool: {e}")
+    print("Checking internet connection...")
+    internet_working = check_internet_connection()
+    
+    if internet_working:
+        print("\nChecking web scraping capability...")
+        scraping_working = check_web_scraping_capability()
+        
+        if scraping_working:
+            print("\n✅ Success! Your Python script can now access the internet and perform web scraping.")
+            print("The issue was resolved by explicitly disabling proxies in your requests.")
+        else:
+            print("\n❌ Your script can connect to the internet but still has issues with web scraping.")
+            print("Try different URLs or check if there are other security restrictions.")
+    else:
+        print("\n❌ Still having internet connection issues.")
+        print("You might need to check your TLS version or firewall settings.")
 ```
 
-Save this script to a file (e.g., `network_diagnostic.py`) and run it. It will:
+This modified script:
 
-1. Check your Python version and environment
-2. Check your system information and network configuration
-3. Test DNS resolution to multiple domains
-4. Perform ping tests to verify basic connectivity
-5. Check your proxy settings (both environment variables and system settings)
-6. Check your firewall status
-7. Test connections with different User-Agent headers
-8. Try connecting to multiple websites to rule out site-specific issues
-9. Test with explicitly disabled proxies
-10. Check SSL/TLS functionality
+1. Explicitly disables proxies using `proxies = {'http': None, 'https': None}`
+2. Applies this to both your internet connection test and web scraping test
+3. Keeps the same user agent you had in your original code
+4. Provides clear feedback about what's working or not
 
-After running all tests, it will provide a comprehensive diagnosis of what might be causing your connectivity issues in Python, along with recommendations for fixing the problem.
+Run this script to see if it resolves your connection issues. If this works, you'll need to add the proxy configuration to all your web scraping scripts moving forward.
 
-The most common causes are typically:
-1. Proxy configuration issues
-2. Firewall or antivirus blocking Python
-3. SSL certificate problems
-4. User-Agent filtering on certain websites
+If you're still having issues after trying this solution, the diagnostic output also mentions two other potential causes:
+1. TLS version incompatibility 
+2. Firewall/Antivirus blocking Python connections
 
-Let me know if you run into any issues with this diagnostic script or if you need help understanding its output!
+Would you like me to provide solutions for those issues as well if the proxy fix doesn't work?
