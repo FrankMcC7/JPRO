@@ -1,0 +1,167 @@
+I'll help you create a Python script to match fund names from your Excel file with the LEI data in the XML GLEIF file. Let me write a comprehensive solution for you.
+
+First, let's understand what we need to do:
+1. Read the XML GLEIF file which contains LEI data
+2. Read the Excel file with fund names
+3. Match fund names between the two files
+4. Output the LEI for each matched fund
+
+Here's a Python script that accomplishes this:
+
+```python
+import pandas as pd
+import xml.etree.ElementTree as ET
+import re
+from fuzzywuzzy import fuzz
+import os
+
+def clean_name(name):
+    """Clean fund name for better matching"""
+    if isinstance(name, str):
+        # Convert to lowercase
+        name = name.lower()
+        # Remove special characters, extra spaces
+        name = re.sub(r'[^\w\s]', ' ', name)
+        # Replace multiple spaces with single space
+        name = re.sub(r'\s+', ' ', name)
+        return name.strip()
+    return ""
+
+def find_best_match(fund_name, lei_entities, threshold=85):
+    """Find the best match for a fund name in LEI entities"""
+    best_score = 0
+    best_match = None
+    
+    clean_fund_name = clean_name(fund_name)
+    
+    for entity_id, entity_name in lei_entities.items():
+        clean_entity_name = clean_name(entity_name)
+        
+        # Calculate similarity score
+        score = fuzz.token_sort_ratio(clean_fund_name, clean_entity_name)
+        
+        if score > best_score:
+            best_score = score
+            best_match = entity_id
+    
+    # Return the match if score exceeds threshold
+    if best_score >= threshold:
+        return best_match, best_score
+    return None, best_score
+
+def parse_gleif_xml(xml_file):
+    """Parse GLEIF XML file and extract LEI and LegalName pairs"""
+    print(f"Parsing {xml_file}...")
+    lei_entities = {}
+    
+    # Use iterparse for large XML files
+    context = ET.iterparse(xml_file, events=('end',))
+    
+    count = 0
+    for event, elem in context:
+        # Look for LEIRecord elements
+        if elem.tag.endswith('LEIRecord'):
+            lei = None
+            legal_name = None
+            
+            # Extract LEI
+            lei_elem = elem.find('.//{*}LEI')
+            if lei_elem is not None:
+                lei = lei_elem.text
+            
+            # Extract LegalName
+            legal_name_elem = elem.find('.//{*}LegalName')
+            if legal_name_elem is not None:
+                legal_name = legal_name_elem.text
+            
+            if lei and legal_name:
+                lei_entities[lei] = legal_name
+                count += 1
+                if count % 10000 == 0:
+                    print(f"Processed {count} LEI records...")
+            
+            # Clear element to save memory
+            elem.clear()
+    
+    print(f"Finished parsing. Found {len(lei_entities)} LEI records.")
+    return lei_entities
+
+def main():
+    # File paths
+    gleif_xml_file = input("Enter path to GLEIF XML file: ")
+    excel_file = input("Enter path to Excel file with fund names: ")
+    output_file = input("Enter path for output Excel file: ")
+    
+    # Column name in Excel file
+    fund_name_column = input("Enter the column name that contains fund names: ")
+    
+    # Parse GLEIF XML file
+    lei_entities = parse_gleif_xml(gleif_xml_file)
+    
+    # Read Excel file
+    print(f"Reading Excel file {excel_file}...")
+    df = pd.read_excel(excel_file)
+    
+    if fund_name_column not in df.columns:
+        print(f"Error: Column '{fund_name_column}' not found in Excel file.")
+        return
+    
+    # Add columns for results
+    df['LEI'] = None
+    df['Match_Score'] = None
+    
+    # Match fund names
+    print("Matching fund names...")
+    for idx, row in df.iterrows():
+        fund_name = row[fund_name_column]
+        if pd.isna(fund_name) or fund_name == "":
+            continue
+        
+        lei, score = find_best_match(fund_name, lei_entities)
+        
+        df.at[idx, 'LEI'] = lei
+        df.at[idx, 'Match_Score'] = score
+        
+        if idx % 100 == 0:
+            print(f"Processed {idx} of {len(df)} fund names...")
+    
+    # Save results
+    print(f"Saving results to {output_file}...")
+    df.to_excel(output_file, index=False)
+    print("Done!")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"An error occurred: {e}")
+```
+
+This script:
+
+1. Uses `xml.etree.ElementTree` to efficiently parse the large GLEIF XML file.
+2. Uses `pandas` to read and write Excel files.
+3. Implements fuzzy matching (using `fuzzywuzzy` library) to handle slight differences in fund names between files.
+4. Cleans fund names before matching to improve matching accuracy.
+5. Provides a configurable threshold to control match strictness.
+6. Outputs both the matched LEI and a match score for each fund.
+
+To use this script, you'll need to install the required libraries:
+
+```python
+pip install pandas openpyxl lxml fuzzywuzzy python-Levenshtein
+```
+
+The script will ask you for:
+1. The path to your GLEIF XML file
+2. The path to your Excel file with fund names
+3. The path for the output Excel file
+4. The name of the column in your Excel file that contains fund names
+
+The output will include two new columns:
+- `LEI`: The matched LEI code (or None if no match found)
+- `Match_Score`: A similarity score (0-100) indicating how confident the match is
+
+You can adjust the `threshold` parameter in the `find_best_match` function to make the matching more or less strict as needed.
+
+Would you like me to explain any specific part of this script in more detail?
