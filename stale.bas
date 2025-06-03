@@ -39,10 +39,20 @@ Sub Refresh_PortfolioTable()
     '––– STEP 5: Build two lookup dictionaries via array‐based loops –––
     '  • dictAll : keyed on “Fund GCI” → array( “IA GCI”, “Fund LEI”, “Fund Code” ), but only where Review Status = "Approved"
     '  • dictData : keyed on “Fund Manager GCI” → array( “Family”, “ECA India Analyst” )
-    Set dictAll  = BuildDictFromTable(loAll, "Fund GCI",         Array("IA GCI", "Fund LEI", "Fund Code"), _
-                                      "Review Status", "Approved")
-    Set dictData = BuildDictFromTable(loData, "Fund Manager GCI", Array("Family", "ECA India Analyst"), _
-                                      "", "")
+    Set dictAll  = BuildDictFromTable( _
+                        lo:=loAll, _
+                        keyCol:="Fund GCI", _
+                        valCols:=Array("IA GCI", "Fund LEI", "Fund Code"), _
+                        filterCol:="Review Status", _
+                        filterVal:="Approved" _
+                   )
+    Set dictData = BuildDictFromTable( _
+                        lo:=loData, _
+                        keyCol:="Fund Manager GCI", _
+                        valCols:=Array("Family", "ECA India Analyst"), _
+                        filterCol:="", _
+                        filterVal:="" _
+                   )
 
     '––– STEP 6: Clear any existing data (and filters) from PortfolioTable –––
     On Error Resume Next
@@ -59,8 +69,18 @@ Sub Refresh_PortfolioTable()
 
     '––– STEP 8: Pre‐allocate an output array large enough to hold all Trigger + Non-Trigger rows –––
     Dim trigCount As Long, nonCount As Long
-    If Not loTrig.DataBodyRange Is Nothing Then trigCount = loTrig.DataBodyRange.Rows.Count Else trigCount = 0
-    If Not loNon.DataBodyRange Is Nothing  Then nonCount  = loNon.DataBodyRange.Rows.Count  Else nonCount  = 0
+    If Not loTrig.DataBodyRange Is Nothing Then
+        trigCount = loTrig.DataBodyRange.Rows.Count
+    Else
+        trigCount = 0
+    End If
+
+    If Not loNon.DataBodyRange Is Nothing Then
+        nonCount = loNon.DataBodyRange.Rows.Count
+    Else
+        nonCount = 0
+    End If
+
     capacity = trigCount + nonCount
 
     ' If there is no data at all, we can bail out immediately
@@ -96,8 +116,8 @@ Sub Refresh_PortfolioTable()
 
     '––– STEP 12: Remap Region codes in‐place: “US” → “AMRS”, “ASIA” → “APAC” –––
     With loPort.ListColumns("Region").DataBodyRange
-        .Replace What:="US",   Replacement:="AMRS", xlWhole
-        .Replace What:="ASIA", Replacement:="APAC", xlWhole
+        .Replace What:="US",   Replacement:="AMRS", LookAt:=xlWhole
+        .Replace What:="ASIA", Replacement:="APAC", LookAt:=xlWhole
     End With
 
 Finalize:
