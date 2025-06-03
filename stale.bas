@@ -1,77 +1,107 @@
 Option Explicit
 
-'======================= MASTER ROUTINE ========================
+'===========================
+'  MAIN ENTRY POINT
+'===========================
 Sub Refresh_PortfolioTable()
     Dim fTrig As String, fNon As String, fAll As String
     Dim wbTrig As Workbook, wbNon As Workbook, wbAll As Workbook
     Dim loTrig As ListObject, loNon As ListObject, loAll As ListObject
     Dim loPort As ListObject, loData As ListObject
     Dim dictAll As Object, dictData As Object
-    Dim colMap As Object, arr(), ptr As Long, capacity As Long
+    Dim arrOut As Variant, ptr As Long, capacity As Long
+    Dim colMap As Object
 
-    '––– 1. Prompt for files (TRIGGER, NON‐TRIGGER, ALL‐FUNDS) –––
-    fTrig = PickFile("Select TRIGGER file"):        If fTrig = "" Then Exit Sub
-    fNon  = PickFile("Select NON‐TRIGGER file"):    If fNon = "" Then Exit Sub
-    fAll  = PickFile("Select ALL‐FUNDS file"):      If fAll = "" Then Exit Sub
+    '––– STEP 1: Ask user to pick the three files –––
+    fTrig = PickFile("Select the TRIGGER file")
+    If fTrig = "" Then Exit Sub
+    fNon = PickFile("Select the NON-TRIGGER file")
+    If fNon = "" Then Exit Sub
+    fAll = PickFile("Select the ALL-FUNDS file")
+    If fAll = "" Then Exit Sub
 
-    '––– 2. Open workbooks as ReadOnly –––
+    '––– STEP 2: Open each workbook as ReadOnly –––
     Set wbTrig = Workbooks.Open(fTrig, ReadOnly:=True)
     Set wbNon  = Workbooks.Open(fNon,  ReadOnly:=True)
     Set wbAll  = Workbooks.Open(fAll,  ReadOnly:=True)
 
-    '––– 3. Convert sheets to tables –––
+    '––– STEP 3: Convert each sheet to a ListObject (table) –––
+    '    • TRIGGER and NON-TRIGGER: just convert entire UsedRange to a table
+    '    • ALL-FUNDS: delete row 1 first, then convert, then immediately filter to keep only Review Status = "Approved"
     Set loTrig = EnsureTable(wbTrig.Worksheets(1), False, False)
     Set loNon  = EnsureTable(wbNon.Worksheets(1),  False, False)
-    ' For All‐Funds: delete row 1 first, then keep only “Approved” in Review Status
-    Set loAll = EnsureTable(wbAll.Worksheets(1), True, True)
+    Set loAll  = EnsureTable(wbAll.Worksheets(1),  True,  True)   ' delete row 1; filter out non-"Approved"
 
-    '––– 4. Identify PortfolioTable & DatasetTable in THIS workbook –––
+    '––– STEP 4: Grab the two target tables in THIS workbook –––
     Set loPort = ThisWorkbook.Worksheets("Portfolio").ListObjects("PortfolioTable")
     Set loData = ThisWorkbook.Worksheets("Dataset").ListObjects("DatasetTable")
 
-    '––– 5. Build dictionaries for lookups (Fund GCI → IA GCI, LEI, Code; Fund Mgr GCI → Family, ECA) –––
-    Set dictAll  = BuildDict(loAll,  "Fund GCI",         Array("IA GCI", "Fund LEI", "Fund Code"))
-    Set dictData = BuildDict(loData, "Fund Manager GCI", Array("Family", "ECA India Analyst"))
+    '––– STEP 5: Build two lookup dictionaries via array‐based loops –––
+    '  • dictAll : keyed on “Fund GCI” → array( “IA GCI”, “Fund LEI”, “Fund Code” ), but only where Review Status = "Approved"
+    '  • dictData : keyed on “Fund Manager GCI” → array( “Family”, “ECA India Analyst” )
+    Set dictAll  = BuildDictFromTable(loAll, "Fund GCI",         Array("IA GCI", "Fund LEI", "Fund Code"), _
+                                      "Review Status", "Approved")
+    Set dictData = BuildDictFromTable(loData, "Fund Manager GCI", Array("Family", "ECA India Analyst"), _
+                                      "", "")
 
-    '––– 6. Clear any filters and delete existing rows from PortfolioTable –––
-    On Error Resume Next: loPort.Range.AutoFilter.ShowAllData: On Error GoTo 0
+    '––– STEP 6: Clear any existing data (and filters) from PortfolioTable –––
+    On Error Resume Next
+    loPort.Range.AutoFilter.ShowAllData
+    On Error GoTo 0
     If Not loPort.DataBodyRange Is Nothing Then loPort.DataBodyRange.Delete
 
-    '––– 7. Turn OFF screen updating/events/calculation for speed –––
+    '––– STEP 7: Speed optimizations – turn off screen updates, events, and auto‐calculation –––
     With Application
         .ScreenUpdating = False
         .EnableEvents   = False
         .Calculation    = xlCalculationManual
     End With
 
-    '––– 8. Pre‐allocate output array to size (trigger rows + non‐trigger rows) × number of columns –––
-    Set colMap  = BuildIndex(loPort)
-    capacity   = IIf(Not loTrig.DataBodyRange Is Nothing, loTrig.DataBodyRange.Rows.Count, 0) _
-               + IIf(Not loNon.DataBodyRange Is Nothing, loNon.DataBodyRange.Rows.Count, 0)
-    ReDim arr(1 To capacity, 1 To loPort.ListColumns.Count)
+    '––– STEP 8: Pre‐allocate an output array large enough to hold all Trigger + Non-Trigger rows –––
+    Dim trigCount As Long, nonCount As Long
+    If Not loTrig.DataBodyRange Is Nothing Then trigCount = loTrig.DataBodyRange.Rows.Count Else trigCount = 0
+    If Not loNon.DataBodyRange Is Nothing  Then nonCount  = loNon.DataBodyRange.Rows.Count  Else nonCount  = 0
+    capacity = trigCount + nonCount
 
-    '––– 9. Populate rows from Trigger file (flag = “Trigger”) –––
-    ptr = FillArray(loTrig, "Trigger", "", "", dictAll, dictData, arr, 0, colMap)
+    ' If there is no data at all, we can bail out immediately
+    If capacity = 0 Then GoTo Finalize
 
-    '––– 10. Populate rows from Non‐Trigger file (skip “FI‐ASIA”) –––
-    ptr = FillArray(loNon, "Non‐Trigger", "Business Unit", "FI‐ASIA", dictAll, dictData, arr, ptr, colMap)
+    ' We dimension arrOut = (1 To capacity) × (1 To numberOfColumnsInPortfolioTable)
+    ReDim arrOut(1 To capacity, 1 To loPort.ListColumns.Count)
+    Set colMap = BuildIndex(loPort)   ' maps PortfolioTable column names → their column index in arrOut
 
-    '––– 11. Write array back underneath PortfolioTable’s header row –––
+    '––– STEP 9: Copy all rows from the TRIGGER table into arrOut (flag = "Trigger") –––
+    ptr = FillArrayFast( _
+            loSrc:=loTrig, _
+            flag:="Trigger", _
+            skipCol:="", skipVal:="", _
+            dictAll:=dictAll, dictData:=dictData, _
+            arrOut:=arrOut, startPtr:=0, colMap:=colMap _
+          )
+
+    '––– STEP 10: Copy all rows from the NON-TRIGGER table into arrOut (flag = "Non-Trigger"), skipping Business Unit="FI-ASIA" –––
+    ptr = FillArrayFast( _
+            loSrc:=loNon, _
+            flag:="Non-Trigger", _
+            skipCol:="Business Unit", skipVal:="FI-ASIA", _
+            dictAll:=dictAll, dictData:=dictData, _
+            arrOut:=arrOut, startPtr:=ptr, colMap:=colMap _
+          )
+
+    '––– STEP 11: Write arrOut back into PortfolioTable in one bulk operation –––
     If ptr > 0 Then
-        'Use HeaderRowRange.Offset(1) even if DataBodyRange is Nothing
-        loPort.HeaderRowRange.Offset(1, 0).Resize(ptr, UBound(arr, 2)).Value = arr
-        'Resize table to include header + new rows
+        loPort.HeaderRowRange.Offset(1, 0).Resize(ptr, UBound(arrOut, 2)).Value = arrOut
         loPort.Resize loPort.HeaderRowRange.Resize(ptr + 1)
     End If
 
-    '––– 12. Remap Region codes (“US”→“AMRS”, “ASIA”→“APAC”) –––
+    '––– STEP 12: Remap Region codes in‐place: “US” → “AMRS”, “ASIA” → “APAC” –––
     With loPort.ListColumns("Region").DataBodyRange
-        .Replace "US",   "AMRS", xlWhole
-        .Replace "ASIA", "APAC", xlWhole
+        .Replace What:="US",   Replacement:="AMRS", xlWhole
+        .Replace What:="ASIA", Replacement:="APAC", xlWhole
     End With
 
-CleanUp:
-    '––– 13. Restore application settings –––
+Finalize:
+    '––– STEP 13: Re-enable updates/events/calculation –––
     With Application
         .Calculation    = xlCalculationAutomatic
         .EnableEvents   = True
@@ -79,7 +109,10 @@ CleanUp:
     End With
 End Sub
 
-'======================= HELPER: PICK A FILE =======================
+'===========================
+'  FILEPICKER HELPER
+'===========================
+' Returns the full path of the selected file, or "" if the user cancels.
 Private Function PickFile(promptText As String) As String
     With Application.FileDialog(msoFileDialogFilePicker)
         .Title = promptText
@@ -88,169 +121,278 @@ Private Function PickFile(promptText As String) As String
     End With
 End Function
 
-'================== HELPER: ENSURE A SHEET IS A TABLE =================
-' deleteRow1 = True will delete the top row before resizing
-' filterApproved = True will remove ANY row where "Review Status" <> "Approved"
+'===========================
+'  ENSURE A SHEET IS A TABLE
+'===========================
+'  ws: the Worksheet you want to turn into a ListObject  
+'  deleteRow1 = True → delete the top row before converting  
+'  filterApproved = True → immediately filter out any row whose "Review Status" <> "Approved", then delete those filtered rows  
 Private Function EnsureTable(ws As Worksheet, deleteRow1 As Boolean, filterApproved As Boolean) As ListObject
-    Dim tblRange As Range, ur As Range, lo As ListObject
-
-    ' 1. If requested, delete the first row (often a spurious header)
-    If deleteRow1 Then ws.Rows(1).Delete
-
-    ' 2. Define the used‐range after deletion
-    Set ur = ws.UsedRange
-    If ur Is Nothing Then
-        ' If sheet is completely empty, create an empty 1×1 table
-        Set tblRange = ws.Range("A1")
-        Set EnsureTable = ws.ListObjects.Add(xlSrcRange, tblRange, , xlYes)
-        Exit Function
+    If deleteRow1 Then
+        ws.Rows(1).Delete
     End If
 
-    ' 3. Convert that UsedRange to a ListObject (always treat first row as header)
-    Set EnsureTable = ws.ListObjects.Add(xlSrcRange, ur, , xlYes)
+    Dim ur As Range
+    On Error Resume Next
+    Set ur = ws.UsedRange
+    On Error GoTo 0
 
-    ' 4. If requested, filter out any row whose "Review Status" <> "Approved"
+    If ur Is Nothing Then
+        ' If the sheet is entirely blank after deleting row 1, create a 1×1 dummy table
+        Set EnsureTable = ws.ListObjects.Add(xlSrcRange, ws.Range("A1"), , xlYes)
+    Else
+        ' Convert the entire UsedRange into a table (first row = header)
+        Set EnsureTable = ws.ListObjects.Add(xlSrcRange, ur, , xlYes)
+    End If
+
+    ' If we need to keep only "Approved" in Review Status, delete everything else
     If filterApproved Then
         If ColumnExists(EnsureTable, "Review Status") Then
+            Dim colReview As Long
+            colReview = EnsureTable.ListColumns("Review Status").Index
+
             With EnsureTable.Range
-                .AutoFilter Field:=EnsureTable.ListColumns("Review Status").Index, _
-                            Criteria1:="<>Approved"
+                ' Filter to show only rows where Review Status <> "Approved"
+                .AutoFilter Field:=colReview, Criteria1:="<>Approved"
                 On Error Resume Next
-                ' Delete only the VISIBLE rows (i.e. non-“Approved”)
+                ' Delete the visible (non-Approved) rows
                 EnsureTable.DataBodyRange.SpecialCells(xlCellTypeVisible).EntireRow.Delete
                 On Error GoTo 0
-                .AutoFilter ' Clear filter
+                .AutoFilter  ' clear the filter
             End With
         End If
     End If
 End Function
 
-'================== HELPER: BUILD DICTIONARY FOR LOOKUP =================
-'   keyCol   = name of the column to key on (e.g., "Fund GCI")
-'   valCols  = array of column names whose values get stored in a small array
-Private Function BuildDict(lo As ListObject, keyCol As String, valCols As Variant) As Object
-    Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
-    Dim r As Long, k As Variant, v(), i As Long
-
+'===========================
+'  BUILD A LOOKUP DICTIONARY
+'===========================
+'  lo        = a ListObject  
+'  keyCol    = the column to use as dictionary key (e.g. "Fund GCI" or "Fund Manager GCI")  
+'  valCols   = an array of column names whose values you want in the dictionary array  
+'  filterCol = optional column name; if provided, we only include rows where that column = filterVal  
+'  filterVal = the required value in filterCol to include that row  
+'  
+' → returns a Dictionary where  
+'    Key = each row’s keyCol value  
+'    Item(Key) = Variant array of that row’s valCols values  
+Private Function BuildDictFromTable( _
+    lo As ListObject, _
+    keyCol As String, _
+    valCols As Variant, _
+    filterCol As String, _
+    filterVal As String _
+) As Object
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
     If lo.DataBodyRange Is Nothing Then
-        Set BuildDict = d: Exit Function
+        Set BuildDictFromTable = dict: Exit Function
     End If
 
-    For r = 1 To lo.DataBodyRange.Rows.Count
-        k = lo.DataBodyRange(r, lo.ListColumns(keyCol).Index).Value
-        If Len(Trim(k)) > 0 Then
-            ReDim v(0 To UBound(valCols))
-            For i = 0 To UBound(valCols)
-                v(i) = lo.DataBodyRange(r, lo.ListColumns(valCols(i)).Index).Value
-            Next i
-            d(k) = v
+    ' Read the entire DataBodyRange into a 2D Variant array
+    Dim vData As Variant
+    vData = lo.DataBodyRange.Value
+
+    ' Build a header→index map for this table
+    Dim idxSrc As Object: Set idxSrc = CreateObject("Scripting.Dictionary")
+    Dim c As Long
+    For c = 1 To lo.ListColumns.Count
+        idxSrc(lo.ListColumns(c).Name) = c
+    Next c
+
+    ' Find the key column index
+    If Not idxSrc.Exists(keyCol) Then
+        Set BuildDictFromTable = dict: Exit Function
+    End If
+    Dim keyIdx As Long: keyIdx = idxSrc(keyCol)
+
+    ' If we have a filter column, get its index (otherwise 0)
+    Dim filterIdx As Long: filterIdx = 0
+    If filterCol <> "" Then
+        If idxSrc.Exists(filterCol) Then filterIdx = idxSrc(filterCol)
+    End If
+
+    ' Prepare an array of indices for valCols
+    Dim valIdx() As Long, i As Long
+    ReDim valIdx(0 To UBound(valCols))
+    For i = 0 To UBound(valCols)
+        If idxSrc.Exists(valCols(i)) Then
+            valIdx(i) = idxSrc(valCols(i))
+        Else
+            valIdx(i) = 0
         End If
+    Next i
+
+    ' Loop through every row of vData
+    Dim r As Long, k As Variant, vArr() As Variant
+    For r = 1 To UBound(vData, 1)
+        ' If filter is specified, skip rows where filterCol <> filterVal
+        If filterIdx > 0 Then
+            If CStr(vData(r, filterIdx)) <> filterVal Then GoTo NextRowDict
+        End If
+
+        k = vData(r, keyIdx)
+        If Len(Trim(CStr(k))) > 0 Then
+            ReDim vArr(0 To UBound(valCols))
+            For i = 0 To UBound(valCols)
+                If valIdx(i) > 0 Then
+                    vArr(i) = vData(r, valIdx(i))
+                Else
+                    vArr(i) = vbNullString
+                End If
+            Next i
+            dict(k) = vArr
+        End If
+NextRowDict:
     Next r
 
-    Set BuildDict = d
+    Set BuildDictFromTable = dict
 End Function
 
-'================== HELPER: MAP COLUMN NAMES TO INDEX =================
+'===========================
+'  BUILD A COLUMN→INDEX MAP
+'===========================
+' Given a ListObject, returns a Dictionary where  
+'   Key = column name, Value = its position (1-based) in that ListObject  
 Private Function BuildIndex(lo As ListObject) As Object
     Dim m As Object: Set m = CreateObject("Scripting.Dictionary")
     Dim c As Long
-
     For c = 1 To lo.ListColumns.Count
         m(lo.ListColumns(c).Name) = c
     Next c
-
     Set BuildIndex = m
 End Function
 
-'================ HELPER: FILL ARRAY FROM A SOURCE TABLE =================
-'   loSrc       = source ListObject (Trigger or Non-Trigger)
-'   flag        = either "Trigger" or "Non-Trigger"
-'   skipCol     = name of column to check for skipping (e.g. "Business Unit")
-'   skipVal     = if skipCol = skipVal, that row is omitted
-'   dictAll     = dictionary from All-Funds (keyed on Fund GCI)
-'   dictData    = dictionary from DatasetTable (keyed on Fund Mgr GCI)
-'   arr         = pre-dim’d 2D array to hold output
-'   startPtr    = row index in arr to begin filling (1-based)
-'   colMap      = dictionary mapping table‐column names → index in arr
-Private Function FillArray( _
-    loSrc       As ListObject, _
-    flag        As String, _
-    skipCol     As String, _
-    skipVal     As String, _
-    dictAll     As Object, _
-    dictData    As Object, _
-    arr         As Variant, _
-    startPtr    As Long, _
-    colMap      As Object) As Long
+'===========================
+'  FILL THE OUTPUT ARRAY
+'===========================
+' loSrc        = the source ListObject (Trigger or Non-Trigger)  
+' flag         = either "Trigger" or "Non-Trigger"  
+' skipCol      = name of a column to test for skipping (e.g. "Business Unit")  
+' skipVal      = if skipCol=skipVal, that row is omitted  
+' dictAll      = dictionary built from All-Funds (key=Fund GCI → IA GCI/LEI/Code)  
+' dictData     = dictionary built from DatasetTable (key=Fund Mgr GCI → Family/ECA)  
+' arrOut       = the pre-dim’d 2D array (1 To capacity, 1 To columnCount)  
+' startPtr     = how many rows have already been filled in arrOut (0-based count).  
+' colMap       = dictionary mapping PortfolioTable column names → arrOut column index  
+'  
+'→ returns the new pointer (row count) in arrOut after filling all valid rows  
+Private Function FillArrayFast( _
+    loSrc As ListObject, _
+    flag As String, _
+    skipCol As String, _
+    skipVal As String, _
+    dictAll As Object, _
+    dictData As Object, _
+    arrOut As Variant, _
+    startPtr As Long, _
+    colMap As Object _
+) As Long
 
-    Dim r As Long, fGCI As String, fMgrGCI As String
-    Dim srcRow As Range
-
+    ' If the source has no data, skip immediately
     If loSrc.DataBodyRange Is Nothing Then
-        FillArray = startPtr: Exit Function
+        FillArrayFast = startPtr
+        Exit Function
     End If
 
-    For r = 1 To loSrc.DataBodyRange.Rows.Count
-        Set srcRow = loSrc.DataBodyRange.Rows(r)
+    ' Read entire source data into a Variant array
+    Dim vSrc As Variant
+    vSrc = loSrc.DataBodyRange.Value
 
-        ' 1. Skip rows if skipCol = skipVal
-        If skipCol <> "" Then
-            If srcRow.Cells(1, loSrc.ListColumns(skipCol).Index).Value = skipVal Then GoTo NextRow
+    ' Build a header→index map for the source table
+    Dim idxSrc As Object: Set idxSrc = CreateObject("Scripting.Dictionary")
+    Dim c As Long
+    For c = 1 To loSrc.ListColumns.Count
+        idxSrc(loSrc.ListColumns(c).Name) = c
+    Next c
+
+    ' Find indices of columns we actually need (skipCol, "Fund GCI", etc.)
+    Dim skipIdx As Long: skipIdx = 0
+    If skipCol <> "" Then
+        If idxSrc.Exists(skipCol) Then skipIdx = idxSrc(skipCol)
+    End If
+
+    Dim idx_FundGCI As Long:   idx_FundGCI   = IIf(idxSrc.Exists("Fund GCI"),           idxSrc("Fund GCI"),           0)
+    Dim idx_FundMgr As Long:   idx_FundMgr   = IIf(idxSrc.Exists("Fund Manager"),       idxSrc("Fund Manager"),       0)
+    Dim idx_FundName As Long:  idx_FundName  = IIf(idxSrc.Exists("Fund Name"),          idxSrc("Fund Name"),          0)
+    Dim idx_CreditOff As Long: idx_CreditOff = IIf(idxSrc.Exists("Credit Officer"),     idxSrc("Credit Officer"),     0)
+    Dim idx_WCA As Long:       idx_WCA       = IIf(idxSrc.Exists("WCA"),                idxSrc("WCA"),                0)
+    Dim idx_Region As Long:    idx_Region    = IIf(idxSrc.Exists("Region"),             idxSrc("Region"),             0)
+    Dim idx_WksMissing As Long:    idx_WksMissing    = IIf(idxSrc.Exists("Wks Missing"),     idxSrc("Wks Missing"),     0)
+    Dim idx_WeeksMissing As Long:  idx_WeeksMissing  = IIf(idxSrc.Exists("Weeks Missing"),   idxSrc("Weeks Missing"),   0)
+    Dim idx_LatestNAV As Long: idx_LatestNAV = IIf(idxSrc.Exists("Latest NAV Date"),   idxSrc("Latest NAV Date"),    0)
+    Dim idx_ReqNAV As Long
+    idx_ReqNAV = 0
+    If idxSrc.Exists("Req NAV Date") Then
+        idx_ReqNAV = idxSrc("Req NAV Date")
+    ElseIf idxSrc.Exists("Required NAV Date") Then
+        idx_ReqNAV = idxSrc("Required NAV Date")
+    End If
+
+    ' Main loop: for each row in vSrc(r, *) ...
+    Dim r As Long, outRow As Long
+    Dim fGCI As Variant, fMgrGCI As Variant
+
+    For r = 1 To UBound(vSrc, 1)
+        ' 1) If skipCol is defined and that cell = skipVal, skip this row
+        If skipIdx > 0 Then
+            If CStr(vSrc(r, skipIdx)) = skipVal Then GoTo NextRow
         End If
 
-        ' 2. Copy common columns
+        ' 2) Advance our pointer in arrOut (fill row #)
         startPtr = startPtr + 1
-        fGCI = srcRow.Cells(1, loSrc.ListColumns("Fund GCI").Index).Value
+        outRow = startPtr
 
-        With arr
-            .Item(startPtr, colMap("Fund GCI"))        = fGCI
-            .Item(startPtr, colMap("Fund Manager"))    = srcRow.Cells(1, loSrc.ListColumns("Fund Manager").Index).Value
-            .Item(startPtr, colMap("Fund Name"))       = srcRow.Cells(1, loSrc.ListColumns("Fund Name").Index).Value
-            .Item(startPtr, colMap("Credit Officer"))  = srcRow.Cells(1, loSrc.ListColumns("Credit Officer").Index).Value
-            .Item(startPtr, colMap("WCA"))             = srcRow.Cells(1, loSrc.ListColumns("WCA").Index).Value
-            .Item(startPtr, colMap("Region"))          = srcRow.Cells(1, loSrc.ListColumns("Region").Index).Value
-            ' Weeks Missing vs Wks Missing alias
-            .Item(startPtr, colMap("Wks Missing"))     = srcRow.Cells(1, loSrc.ListColumns( _
-                                                         OptionalAlias(loSrc, "Wks Missing", "Weeks Missing")).Index).Value
-            .Item(startPtr, colMap("Latest NAV Date")) = srcRow.Cells(1, loSrc.ListColumns("Latest NAV Date").Index).Value
-            .Item(startPtr, colMap("Req NAV Date"))    = srcRow.Cells(1, loSrc.ListColumns( _
-                                                         OptionalAlias(loSrc, "Req NAV Date", "Required NAV Date")).Index).Value
-            .Item(startPtr, colMap("Trigger/Non-Trigger")) = flag
-        End With
+        ' 3) Copy “Fund GCI” and other core fields
+        fGCI = IIf(idx_FundGCI > 0, vSrc(r, idx_FundGCI), vbNullString)
+        arrOut(outRow, colMap("Fund GCI")) = fGCI
+        If idx_FundMgr > 0 Then  arrOut(outRow, colMap("Fund Manager"))    = vSrc(r, idx_FundMgr)
+        If idx_FundName > 0 Then arrOut(outRow, colMap("Fund Name"))       = vSrc(r, idx_FundName)
+        If idx_CreditOff > 0 Then arrOut(outRow, colMap("Credit Officer"))  = vSrc(r, idx_CreditOff)
+        If idx_WCA > 0 Then       arrOut(outRow, colMap("WCA"))             = vSrc(r, idx_WCA)
+        If idx_Region > 0 Then    arrOut(outRow, colMap("Region"))          = vSrc(r, idx_Region)
 
-        ' 3. Lookup IA GCI, LEI, Code in All-Funds
-        If dictAll.Exists(fGCI) Then
-            fMgrGCI = dictAll(fGCI)(0)
-            arr(startPtr, colMap("Fund Manager GCI")) = dictAll(fGCI)(0)
-            arr(startPtr, colMap("Fund LEI"))         = dictAll(fGCI)(1)
-            arr(startPtr, colMap("Fund Code"))        = dictAll(fGCI)(2)
-        Else
-            fMgrGCI = ""
+        ' “Wks Missing” vs “Weeks Missing” alias
+        If idx_WksMissing > 0 Then
+            arrOut(outRow, colMap("Wks Missing")) = vSrc(r, idx_WksMissing)
+        ElseIf idx_WeeksMissing > 0 Then
+            arrOut(outRow, colMap("Wks Missing")) = vSrc(r, idx_WeeksMissing)
         End If
 
-        ' 4. Lookup Family/ECA via Fund Mgr GCI
-        If Len(Trim(fMgrGCI)) > 0 Then
+        If idx_LatestNAV > 0 Then arrOut(outRow, colMap("Latest NAV Date")) = vSrc(r, idx_LatestNAV)
+        If idx_ReqNAV > 0 Then    arrOut(outRow, colMap("Req NAV Date"))   = vSrc(r, idx_ReqNAV)
+
+        arrOut(outRow, colMap("Trigger/Non-Trigger")) = flag
+
+        ' 4) Lookup in dictAll → fill “Fund Manager GCI”, “Fund LEI”, “Fund Code”
+        fMgrGCI = vbNullString
+        If Not IsEmpty(fGCI) Then
+            If dictAll.Exists(fGCI) Then
+                fMgrGCI = dictAll(fGCI)(0)
+                arrOut(outRow, colMap("Fund Manager GCI")) = dictAll(fGCI)(0)
+                arrOut(outRow, colMap("Fund LEI"))         = dictAll(fGCI)(1)
+                arrOut(outRow, colMap("Fund Code"))        = dictAll(fGCI)(2)
+            End If
+        End If
+
+        ' 5) Lookup in dictData (via fMgrGCI) → fill “Family” & “ECA India Analyst”
+        If Len(Trim(CStr(fMgrGCI))) > 0 Then
             If dictData.Exists(fMgrGCI) Then
-                arr(startPtr, colMap("Family"))            = dictData(fMgrGCI)(0)
-                arr(startPtr, colMap("ECA India Analyst")) = dictData(fMgrGCI)(1)
+                arrOut(outRow, colMap("Family"))            = dictData(fMgrGCI)(0)
+                arrOut(outRow, colMap("ECA India Analyst")) = dictData(fMgrGCI)(1)
             End If
         End If
 
 NextRow:
     Next r
 
-    FillArray = startPtr
+    FillArrayFast = startPtr
 End Function
 
-'=========== HELPER: RETURN column name if it exists, else fallback name ===========
-Private Function OptionalAlias(lo As ListObject, nm1 As String, nm2 As String) As String
-    OptionalAlias = IIf(ColumnExists(lo, nm1), nm1, nm2)
-End Function
-
-'=========== HELPER: CHECK IF A COLUMN EXISTS IN A TABLE ===========
+'===========================
+'  COLUMN‐EXISTS CHECK
+'===========================
 Private Function ColumnExists(lo As ListObject, colName As String) As Boolean
     On Error Resume Next
     ColumnExists = (lo.ListColumns(colName).Index > 0)
     Err.Clear: On Error GoTo 0
 End Function
-'===================================================================================
