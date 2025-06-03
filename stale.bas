@@ -1,120 +1,149 @@
 Option Explicit
-
+'=========================== MASTER ROUTINE ===========================
 Sub Refresh_PortfolioTable()
+
+    '--- pick files
     Dim fTrig As String, fNon As String, fAll As String
-    Dim wbTrig As Workbook, wbNon As Workbook, wbAll As Workbook
-    Dim loPort As ListObject, loTrig As ListObject, loNon As ListObject, loAll As ListObject
-    Dim wsPort As Worksheet, wsData As Worksheet
-    Dim dictAll As Object, arrOut(), r As Long, c As Long, n As Long
-    Dim hdrs As Variant, idx As Object
-    
-    Application.ScreenUpdating = False
-    Application.EnableEvents = False
-    Application.Calculation = xlCalculationManual
-    
-    '––- pick files ––-
-    fTrig = GetPath("Select TRIGGER file")          : If fTrig = "" Then GoTo tidy
-    fNon  = GetPath("Select NON-TRIGGER file")      : If fNon = "" Then GoTo tidy
-    fAll  = GetPath("Select ALL-FUNDS file")        : If fAll = "" Then GoTo tidy
-    
-    Set wbTrig = Workbooks.Open(fTrig, ReadOnly:=True)
-    Set wbNon  = Workbooks.Open(fNon,  ReadOnly:=True)
-    Set wbAll  = Workbooks.Open(fAll,  ReadOnly:=True)
-    
-    Set wsPort = ThisWorkbook.Worksheets("Portfolio")
-    Set loPort = wsPort.ListObjects("PortfolioTable")
-    
-    'clear filters & old data
-    On Error Resume Next
-    loPort.Range.AutoFilter.ShowAllData
-    On Error GoTo 0
+    fTrig = PickFile("Select TRIGGER file"): If fTrig = "" Then Exit Sub
+    fNon  = PickFile("Select NON-TRIGGER file"): If fNon = "" Then Exit Sub
+    fAll  = PickFile("Select ALL-FUNDS file"):  If fAll = "" Then Exit Sub
+
+    '--- open sources
+    Dim wbTrig As Workbook: Set wbTrig = Workbooks.Open(fTrig, ReadOnly:=True)
+    Dim wbNon  As Workbook: Set wbNon  = Workbooks.Open(fNon,  ReadOnly:=True)
+    Dim wbAll  As Workbook: Set wbAll  = Workbooks.Open(fAll,  ReadOnly:=True)
+
+    '--- convert to tables
+    Dim loTrig As ListObject: Set loTrig = EnsureTable(wbTrig.Worksheets(1), False)
+    Dim loNon  As ListObject: Set loNon  = EnsureTable(wbNon.Worksheets(1),  False)
+    Dim loAll  As ListObject: Set loAll  = EnsureTable(wbAll.Worksheets(1),  True)   'delete row 1
+
+    '--- target & dataset tables in this workbook
+    Dim wsPort As Worksheet: Set wsPort = ThisWorkbook.Worksheets("Portfolio")
+    Dim loPort As ListObject: Set loPort = wsPort.ListObjects("PortfolioTable")
+    Dim loData As ListObject: Set loData = ThisWorkbook.Worksheets("Dataset").ListObjects("DatasetTable")
+
+    '--- dictionaries for rapid look-ups
+    Dim dictAll  As Object: Set dictAll  = BuildDict(loAll,  "Fund GCI",         Array("IA GCI","Fund LEI","Fund Code"))
+    Dim dictData As Object: Set dictData = BuildDict(loData,"Fund Manager GCI", Array("Family","ECA India Analyst"))
+
+    '--- clear PortfolioTable (keep headers, remove filters)
+    On Error Resume Next: loPort.Range.AutoFilter.ShowAllData: On Error GoTo 0
     If Not loPort.DataBodyRange Is Nothing Then loPort.DataBodyRange.Delete
-    
-    '--- build All-Funds dictionary ---
-    Set loAll = ConvertToTable(wbAll.Worksheets(1), True) 'deletes first row
-    Set dictAll = CreateObject("scripting.dictionary")
-    For r = 1 To loAll.DataBodyRange.Rows.Count
-        dictAll(loAll.DataBodyRange(r, loAll.ListColumns("Fund GCI").Index).Value) = _
-            Array( _
-                loAll.DataBodyRange(r, loAll.ListColumns("IA GCI").Index).Value, _
-                loAll.DataBodyRange(r, loAll.ListColumns("Fund LEI").Index).Value, _
-                loAll.DataBodyRange(r, loAll.ListColumns("Fund Code").Index).Value)
-    Next r
-    
-    '--- headings we need, in order ---
-    hdrs = Array("Fund GCI", "Fund Manager", "Fund Name", "Credit Officer", "WCA", _
-                 "Region", "Wks Missing", "Latest NAV Date", "Req NAV Date", "Trigger/Non-Trigger", _
-                 "Fund Manager GCI", "Fund LEI", "Fund Code")
-    
-    Set idx = CreateObject("scripting.dictionary")
-    For c = 1 To loPort.ListColumns.Count: idx(loPort.ListColumns(c).Name) = c: Next
-    
-    '--- append Trigger rows ---
-    n = LoadRows(loTrig, "Trigger", loPort, hdrs, idx, dictAll)
-    '--- append Non-Trigger rows (skip FI-ASIA) ---
-    n = n + LoadRows(loNon, "Non-Trigger", loPort, hdrs, idx, dictAll, "Business Unit", "FI-ASIA")
-    
-tidy:
-    'region mapping
-    With loPort.ListColumns(idx("Region")).DataBodyRange
-        .Replace "US", "AMRS", xlWhole
+
+    '--- performance switches
+    With Application: .ScreenUpdating = False: .EnableEvents = False: .Calculation = xlCalculationManual: End With
+
+    '--- build output array (rows × columns)
+    Dim colMap As Object: Set colMap = BuildIndex(loPort)
+    Dim rowMax As Long: rowMax = loTrig.DataBodyRange.Rows.Count + loNon.DataBodyRange.Rows.Count
+    Dim arr(): ReDim arr(1 To rowMax, 1 To loPort.ListColumns.Count)
+    Dim ptr As Long
+
+    ptr = FillArray(loTrig,"Trigger", "",        "",       dictAll,dictData,arr,ptr,colMap)
+    ptr = FillArray(loNon, "Non-Trigger","Business Unit","FI-ASIA",dictAll,dictData,arr,ptr,colMap)
+
+    '--- write data then resize table
+    If ptr > 0 Then
+        loPort.HeaderRowRange.Offset(1).Resize(ptr, UBound(arr, 2)).Value = arr
+        loPort.Resize loPort.Range.Resize(ptr + 1)
+    End If
+
+    '--- region mapping
+    With loPort.ListColumns("Region").DataBodyRange
+        .Replace "US",   "AMRS", xlWhole
         .Replace "ASIA", "APAC", xlWhole
     End With
-    
-    'restore
-    Application.Calculation = xlCalculationAutomatic
-    Application.EnableEvents = True
-    Application.ScreenUpdating = True
-End Sub
 
-Private Function GetPath(msg As String) As String
+CleanUp:
+    With Application: .Calculation = xlCalculationAutomatic: .EnableEvents = True: .ScreenUpdating = True: End With
+End Sub
+'=========================== SUPPORT ===========================
+Private Function PickFile(msg As String) As String
     With Application.FileDialog(msoFileDialogFilePicker)
         .Title = msg: .AllowMultiSelect = False
-        If .Show = -1 Then GetPath = .SelectedItems(1)
+        If .Show = -1 Then PickFile = .SelectedItems(1)
     End With
 End Function
 
-Private Function ConvertToTable(ws As Worksheet, Optional deleteRow1 As Boolean = False) As ListObject
+Private Function EnsureTable(ws As Worksheet, deleteRow1 As Boolean) As ListObject
     If deleteRow1 Then ws.Rows(1).Delete
-    Dim lastR As Long, lastC As Long
-    lastR = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
-    lastC = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
-    Set ConvertToTable = ws.ListObjects.Add(xlSrcRange, ws.Range(ws.Cells(1, 1), ws.Cells(lastR, lastC)), , xlYes)
+    If ws.ListObjects.Count = 0 Then
+        Dim lr As Long, lc As Long
+        lr = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+        lc = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+        Set EnsureTable = ws.ListObjects.Add(xlSrcRange, ws.Range(ws.Cells(1, 1), ws.Cells(lr, lc)), , xlYes)
+    Else
+        Set EnsureTable = ws.ListObjects(1)
+    End If
 End Function
 
-Private Function LoadRows(loSrc As ListObject, typ As String, _
-                           loDst As ListObject, hdrs, idx, dictAll, _
-                           Optional critCol As String = "", Optional critVal As String = "") As Long
-    Dim arr(), arrOut(), r As Long, c As Long, p As Long, v
-    arr = loSrc.DataBodyRange.Value
-    ReDim arrOut(1 To UBound(arr), 1 To UBound(hdrs) + 1)
-    
-    For r = 1 To UBound(arr)
-        If critCol = "" Or loSrc.DataBodyRange(r, loSrc.ListColumns(critCol).Index).Value <> critVal Then
-            For p = 0 To UBound(hdrs) - 4 'first 9 direct columns
-                v = loSrc.DataBodyRange(r, loSrc.ListColumns(hdrs(p)).Index).Value
-                arrOut(r, idx(hdrs(p))) = IIf(hdrs(p) = "Region", MapRegion(v), v)
-            Next p
-            'trigger/non-trigger flag
-            arrOut(r, idx("Trigger/Non-Trigger")) = typ
-            'dictionary look-ups
-            If dictAll.exists(arrOut(r, idx("Fund GCI"))) Then
-                arrOut(r, idx("Fund Manager GCI")) = dictAll(arrOut(r, idx("Fund GCI")))(0)
-                arrOut(r, idx("Fund LEI")) = dictAll(arrOut(r, idx("Fund GCI")))(1)
-                arrOut(r, idx("Fund Code")) = dictAll(arrOut(r, idx("Fund GCI")))(2)
-            End If
-            LoadRows = LoadRows + 1
+Private Function BuildDict(lo As ListObject, keyCol As String, valCols As Variant) As Object
+    Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
+    Dim r As Long, k
+    For r = 1 To lo.DataBodyRange.Rows.Count
+        k = lo.DataBodyRange(r, lo.ListColumns(keyCol).Index).Value
+        If Len(k) > 0 Then
+            Dim v(): ReDim v(0 To UBound(valCols))
+            Dim i As Long: For i = 0 To UBound(valCols)
+                v(i) = lo.DataBodyRange(r, lo.ListColumns(valCols(i)).Index).Value
+            Next i
+            d(k) = v
         End If
     Next r
-    'dump to table
-    loDst.ListRows.Add AlwaysInsert:=True
-    loDst.DataBodyRange.Rows(loDst.DataBodyRange.Rows.Count).Resize(LoadRows).Value = arrOut
+    Set BuildDict = d
 End Function
 
-Private Function MapRegion(rg As Variant) As String
-    Select Case UCase(rg)
-        Case "US": MapRegion = "AMRS"
-        Case "ASIA": MapRegion = "APAC"
-        Case Else: MapRegion = rg
-    End Select
+Private Function BuildIndex(lo As ListObject) As Object
+    Dim m As Object: Set m = CreateObject("Scripting.Dictionary")
+    Dim c As Long: For c = 1 To lo.ListColumns.Count: m(lo.ListColumns(c).Name) = c: Next c
+    Set BuildIndex = m
 End Function
+
+Private Function FillArray(loSrc As ListObject, flag As String, _
+                            skipCol As String, skipVal As String, _
+                            dictAll As Object, dictData As Object, _
+                            arr, ptr As Long, idx As Object) As Long
+
+    If loSrc.DataBodyRange Is Nothing Then FillArray = ptr: Exit Function  'no data2
+
+    Dim r As Long, fGCI As String, fMgrGCI As String
+    For r = 1 To loSrc.DataBodyRange.Rows.Count
+        If skipCol <> "" Then
+            If loSrc.DataBodyRange(r, loSrc.ListColumns(skipCol).Index).Value = skipVal Then GoTo NextRow
+        End If
+
+        ptr = ptr + 1
+        fGCI = loSrc.DataBodyRange(r, loSrc.ListColumns("Fund GCI").Index).Value
+
+        arr(ptr, idx("Fund GCI"))    = fGCI
+        arr(ptr, idx("Fund Manager"))= loSrc.DataBodyRange(r, loSrc.ListColumns("Fund Manager").Index).Value
+        arr(ptr, idx("Fund Name"))   = loSrc.DataBodyRange(r, loSrc.ListColumns("Fund Name").Index).Value
+        arr(ptr, idx("Credit Officer")) = loSrc.DataBodyRange(r, loSrc.ListColumns("Credit Officer").Index).Value
+        arr(ptr, idx("WCA"))         = loSrc.DataBodyRange(r, loSrc.ListColumns("WCA").Index).Value
+        arr(ptr, idx("Region"))      = loSrc.DataBodyRange(r, loSrc.ListColumns("Region").Index).Value
+        arr(ptr, idx("Wks Missing")) = loSrc.DataBodyRange(r, loSrc.ListColumns(OptionalAlias(loSrc,"Wks Missing","Weeks Missing")).Index).Value
+        arr(ptr, idx("Latest NAV Date")) = loSrc.DataBodyRange(r, loSrc.ListColumns("Latest NAV Date").Index).Value
+        arr(ptr, idx("Req NAV Date"))= loSrc.DataBodyRange(r, loSrc.ListColumns(OptionalAlias(loSrc,"Req NAV Date","Required NAV Date")).Index).Value
+        arr(ptr, idx("Trigger/Non-Trigger")) = flag
+
+        If dictAll.exists(fGCI) Then
+            arr(ptr, idx("Fund Manager GCI")) = dictAll(fGCI)(0)
+            arr(ptr, idx("Fund LEI"))         = dictAll(fGCI)(1)
+            arr(ptr, idx("Fund Code"))        = dictAll(fGCI)(2)
+            fMgrGCI = dictAll(fGCI)(0)
+        End If
+
+        If Len(fMgrGCI) > 0 And dictData.exists(fMgrGCI) Then
+            arr(ptr, idx("Family"))            = dictData(fMgrGCI)(0)
+            arr(ptr, idx("ECA India Analyst")) = dictData(fMgrGCI)(1)
+        End If
+NextRow:
+    Next r
+    FillArray = ptr
+End Function
+
+Private Function OptionalAlias(lo As ListObject, nm1 As String, nm2 As String) As String
+    OptionalAlias = IIf(lo.ListColumns.Contains(nm1), nm1, nm2)
+End Function
+'======================================================================
