@@ -1,84 +1,48 @@
-"""
-RF-Supplement builder
---------------------------------
-• Reads five columns from the NAV Tracker (xlsm).  
-• Reads the ATE file (csv) after dropping its first row.  
-• Flags GCIs that have at least one “NAV per share” trigger.  
-• Writes the result to RF Supplement.csv.  
+import warnings, pandas as pd
+warnings.filterwarnings('ignore', category=UserWarning)          # mute date noise
 
-Author: <your-name> | Date: <today>
-"""
-import warnings
-warnings.filterwarnings('ignore', category=UserWarning)          # mute date warnings
-
-# ------------------------------------------------------------------
-# 1) Patch OpenPyXL’s date converter everywhere it is referenced
-# ------------------------------------------------------------------
+# ---------- 1 ▸ patch openpyxl’s date converter everywhere ----------
 import openpyxl.utils.datetime as dtutil
-import openpyxl.worksheet._reader as wsreader          # same function imported a 2nd time
+_orig_from_excel = dtutil.from_excel                        # keep original
 
-_original_from_excel = dtutil.from_excel
-
-def _safe_from_excel(value, datemode):
-    """Return None instead of raising OverflowError on bad serial dates."""
+def safe_from_excel(*args, **kwargs):
+    """Return None when Excel serial dates overflow Python’s range."""
     try:
-        return _original_from_excel(value, datemode)
-    except OverflowError:                               # out-of-bounds serial
+        return _orig_from_excel(*args, **kwargs)
+    except OverflowError:
         return None
 
-dtutil.from_excel   = _safe_from_excel                  # patch primary reference
-wsreader.from_excel = _safe_from_excel                  # patch secondary import
+dtutil.from_excel = safe_from_excel                         # primary patch
+import openpyxl.worksheet._reader as wsreader
+wsreader.from_excel = safe_from_excel                       # secondary import
 
-# ------------------------------------------------------------------
-# 2) Main processing
-# ------------------------------------------------------------------
-import pandas as pd
+# ---------- 2 ▸ file locations (edit as needed) ---------------------
+NAV_TRACKER = r"C:\path\to\NAV Tracker.xlsm"
+ATE_FILE    = r"C:\path\to\ATE File.csv"
+OUTPUT_CSV  = r"C:\path\to\RF Supplement.csv"
 
-# --- Hard-coded paths ------------------------------------------------
-NAV_TRACKER   = r"C:\path\to\NAV Tracker.xlsm"          # macro-enabled workbook
-ATE_FILE      = r"C:\path\to\ATE File.csv"              # ATE as csv
-OUTPUT_CSV    = r"C:\path\to\RF Supplement.csv"         # destination file
+# ---------- 3 ▸ load NAV Tracker (five columns, as text) ------------
+nav_cols = ["Fund GCI", "ECA India Analyst", "Fund Manager GCI",
+            "Trigger/Non-Trigger", "NAV Source"]
+nav_df = pd.read_excel(NAV_TRACKER, sheet_name="Portfolio",
+                       usecols=nav_cols, dtype=str, engine="openpyxl")
 
-# --- 2.1  Read required columns from NAV Tracker --------------------
-nav_cols = [
-    "Fund GCI",
-    "ECA India Analyst",
-    "Fund Manager GCI",
-    "Trigger/Non-Trigger",
-    "NAV Source",
-]
-nav_df = pd.read_excel(
-    NAV_TRACKER,
-    sheet_name="Portfolio",
-    usecols=nav_cols,
-    dtype=str,                                         # everything as text
-    engine="openpyxl"
-)
-
-# --- 2.2  Build RF Supplement skeleton ------------------------------
 rf_df = nav_df.copy()
-rf_df["NPS Trigger"] = ""                               # placeholder
+rf_df["NPS Trigger"] = ""
 
-# --- 2.3  Read & normalise ATE CSV ----------------------------------
-ate_df = pd.read_csv(ATE_FILE, skiprows=1, dtype=str)   # drop the first row
-ate_df.columns          = ate_df.columns.str.strip().str.lower()
+# ---------- 4 ▸ load & clean ATE CSV -------------------------------
+ate_df = (pd.read_csv(ATE_FILE, skiprows=1, dtype=str)
+            .rename(columns=str.lower)
+            .apply(lambda col: col.str.strip().str.lower()))
 
-ate_df["trigger type"]  = ate_df["trigger type"].str.strip().str.lower()
-ate_df["fund gci"]      = ate_df["fund gci"].str.strip().str.lower()
+gcis_with_nav = set(ate_df.loc[
+    ate_df["trigger type"].str.contains("nav per share", na=False),
+    "fund gci"
+])
 
-# --- 2.4  Determine which GCIs have any ‘nav per share’ trigger -----
-has_nav_mask   = ate_df["trigger type"].str.contains("nav per share", na=False)
-gcis_with_nav  = set(ate_df.loc[has_nav_mask, "fund gci"])
+# ---------- 5 ▸ flag GCIs ------------------------------------------
+rf_df["NPS Trigger"] = (rf_df["Fund GCI"].str.strip().str.lower()
+                        .apply(lambda g: "Yes" if g in gcis_with_nav else "No"))
 
-# --- 2.5  Populate NPS Trigger flag ---------------------------------
-rf_df["NPS Trigger"] = (
-    rf_df["Fund GCI"]
-      .astype(str)
-      .str.strip()
-      .str.lower()
-      .apply(lambda gci: "Yes" if gci in gcis_with_nav else "No")
-)
-
-# --- 2.6  Save & notify ---------------------------------------------
 rf_df.to_csv(OUTPUT_CSV, index=False)
 print(f"✅  RF Supplement created at {OUTPUT_CSV}")
