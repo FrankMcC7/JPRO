@@ -1,8 +1,17 @@
-import pandas as pd
 import warnings
-
-# Suppress pandas UserWarnings (e.g. date-overflow)
 warnings.filterwarnings('ignore', category=UserWarning)
+
+# --- Monkey-patch openpyxl’s date parser to avoid overflow errors ---
+import openpyxl.utils.datetime as dtutil
+_orig = dtutil.from_excel
+def _safe_from_excel(val, datemode):
+    try:
+        return _orig(val, datemode)
+    except OverflowError:
+        return None
+dtutil.from_excel = _safe_from_excel
+
+import pandas as pd
 
 # 1. File paths
 nav_tracker_path = r'C:\path\to\NAV Tracker.xlsm'
@@ -28,7 +37,7 @@ nav_df = pd.read_excel(
 rf_df = nav_df.copy()
 rf_df['NPS Trigger'] = ''
 
-# 4. Load ATE CSV (skip header row) as strings
+# 4. Load ATE CSV (skip first row) as strings
 ate_df = pd.read_csv(ate_path, skiprows=1, dtype=str)
 
 # 5. Normalize headers & values
@@ -43,10 +52,10 @@ gcis_with_nav = set(ate_df.loc[mask, 'fund gci'])
 # 7. Flag Yes/No
 rf_df['NPS Trigger'] = (
     rf_df['Fund GCI']
-      .astype(str)
-      .str.strip()
-      .str.lower()
-      .apply(lambda x: 'Yes' if x in gcis_with_nav else 'No')
+       .astype(str)
+       .str.strip()
+       .str.lower()
+       .apply(lambda x: 'Yes' if x in gcis_with_nav else 'No')
 )
 
 # 8. Output and notify
