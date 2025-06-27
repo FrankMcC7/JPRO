@@ -1,48 +1,49 @@
-import warnings, pandas as pd
-warnings.filterwarnings('ignore', category=UserWarning)          # mute date noise
+import sys, warnings, pandas as pd
+warnings.filterwarnings('ignore', category=UserWarning)          # silence noisy cast msgs
 
-# ---------- 1 ▸ patch openpyxl’s date converter everywhere ----------
+# ---------- 1 ▸ robust patch for ALL from_excel aliases -------------
 import openpyxl.utils.datetime as dtutil
-_orig_from_excel = dtutil.from_excel                        # keep original
+_orig = dtutil.from_excel
 
-def safe_from_excel(*args, **kwargs):
-    """Return None when Excel serial dates overflow Python’s range."""
+def _safe_from_excel(*args, **kwargs):
+    """Return None instead of raising OverflowError on bad Excel serials."""
     try:
-        return _orig_from_excel(*args, **kwargs)
+        return _orig(*args, **kwargs)
     except OverflowError:
         return None
 
-dtutil.from_excel = safe_from_excel                         # primary patch
-import openpyxl.worksheet._reader as wsreader
-wsreader.from_excel = safe_from_excel                       # secondary import
+# replace every existing alias that points at the original function
+for name, mod in sys.modules.items():
+    if name.startswith("openpyxl") and hasattr(mod, "from_excel"):
+        if getattr(mod, "from_excel") is _orig:
+            setattr(mod, "from_excel", _safe_from_excel)
 
-# ---------- 2 ▸ file locations (edit as needed) ---------------------
+# ---------- 2 ▸ paths ------------------------------------------------
 NAV_TRACKER = r"C:\path\to\NAV Tracker.xlsm"
 ATE_FILE    = r"C:\path\to\ATE File.csv"
 OUTPUT_CSV  = r"C:\path\to\RF Supplement.csv"
 
-# ---------- 3 ▸ load NAV Tracker (five columns, as text) ------------
+# ---------- 3 ▸ load NAV Tracker ------------------------------------
 nav_cols = ["Fund GCI", "ECA India Analyst", "Fund Manager GCI",
             "Trigger/Non-Trigger", "NAV Source"]
 nav_df = pd.read_excel(NAV_TRACKER, sheet_name="Portfolio",
                        usecols=nav_cols, dtype=str, engine="openpyxl")
 
-rf_df = nav_df.copy()
-rf_df["NPS Trigger"] = ""
+rf_df = nav_df.assign(**{"NPS Trigger": ""})
 
-# ---------- 4 ▸ load & clean ATE CSV -------------------------------
+# ---------- 4 ▸ load & normalise ATE CSV -----------------------------
 ate_df = (pd.read_csv(ATE_FILE, skiprows=1, dtype=str)
             .rename(columns=str.lower)
-            .apply(lambda col: col.str.strip().str.lower()))
+            .apply(lambda c: c.str.strip().str.lower()))
 
+# ---------- 5 ▸ flag GCIs with any “nav per share” trigger ----------
 gcis_with_nav = set(ate_df.loc[
     ate_df["trigger type"].str.contains("nav per share", na=False),
     "fund gci"
 ])
-
-# ---------- 5 ▸ flag GCIs ------------------------------------------
 rf_df["NPS Trigger"] = (rf_df["Fund GCI"].str.strip().str.lower()
-                        .apply(lambda g: "Yes" if g in gcis_with_nav else "No"))
+                        .map(lambda g: "Yes" if g in gcis_with_nav else "No"))
 
+# ---------- 6 ▸ save -------------------------------------------------
 rf_df.to_csv(OUTPUT_CSV, index=False)
-print(f"✅  RF Supplement created at {OUTPUT_CSV}")
+print(f"✅ RF Supplement created → {OUTPUT_CSV}")
