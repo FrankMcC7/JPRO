@@ -1,7 +1,7 @@
 Option Explicit
 
 '========================
-' Clipboard API (fallback)
+' Clipboard API (bitness-safe)
 '========================
 #If VBA7 Then
     Private Declare PtrSafe Function OpenClipboard Lib "user32" (ByVal hwnd As LongPtr) As Long
@@ -63,7 +63,7 @@ Public Sub Run_ApprovedFunds_CreditStudio_Workflow()
 
     ' 4) Keep only specific Business Units
     FilterKeepOnlyBusinessUnits loApproved, Array("FI-GMC-ASIA", "FI-US", "FI-EMEA")
-    ' loApproved is refreshed inside that procedure
+    ' loApproved refreshed inside that procedure
 
     ' 5) Prepare Fund CoPER list, copy to clipboard; allow copy-again loop
     joinedCoper = JoinColumnValues(loApproved, "Fund CoPER", ",")
@@ -470,10 +470,20 @@ Private Sub CopyToClipboard(ByVal textVal As String)
 End Sub
 
 Private Sub ClipboardSetTextAPI(ByVal textVal As String)
-    Dim bytesNeeded As LongPtr
-    Dim hGlobal As LongPtr
-    Dim pGlobal As LongPtr
-    Dim ok As Long
+    ' Bitness-safe locals
+    #If VBA7 Then
+        Dim bytesNeeded As LongPtr
+        Dim hGlobal As LongPtr
+        Dim pGlobal As LongPtr
+        Dim copyRes As LongPtr
+        Dim ok As Long
+    #Else
+        Dim bytesNeeded As Long
+        Dim hGlobal As Long
+        Dim pGlobal As Long
+        Dim copyRes As Long
+        Dim ok As Long
+    #End If
 
     bytesNeeded = (Len(textVal) * 2) + 2 ' UTF-16 chars + null
     hGlobal = GlobalAlloc(GMEM_MOVEABLE, bytesNeeded)
@@ -482,8 +492,8 @@ Private Sub ClipboardSetTextAPI(ByVal textVal As String)
     pGlobal = GlobalLock(hGlobal)
     If pGlobal = 0 Then Err.Raise vbObjectError + 601, , "Clipboard lock failed."
 
-    ok = lstrcpyW(pGlobal, StrPtr(textVal))
-    GlobalUnlock hGlobal
+    copyRes = lstrcpyW(pGlobal, StrPtr(textVal)) ' <-- correct types
+    GlobalUnlock hGlobal                           ' <-- fixed typo
 
     ok = OpenClipboard(0)
     If ok = 0 Then Err.Raise vbObjectError + 602, , "OpenClipboard failed."
