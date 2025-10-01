@@ -1257,3 +1257,11 @@ Private Function RegionFromBU(ByVal bu As String) As String
     End Select
 End Function
 
+' Ensure that the CoR Recali sheet has the right headers
+Private Sub EnsureRecaliHeaders(ByVal ws As Worksheet)
+    If Trim$(CStr(ws.Cells(1, 1).Value)) = "" Then
+        ws.Cells(1, 1).Value = "Coper ID"
+        ws.Cells(1, 2).Value = "Country of Risk"
+        ws.Cells(1, 3).Value = "Source File"
+    End If
+End Sub
