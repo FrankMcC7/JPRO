@@ -39,7 +39,7 @@ Public G_BatchCount As Long
 Public G_WorkflowReadyToContinue As Boolean
 
 '========================
-' Entry point (renamed for AllFund)
+' Entry point (ALLFUND)
 '========================
 Public Sub Run_AllFund_CreditStudio_Workflow()
     On Error GoTo Fail
@@ -69,7 +69,6 @@ Public Sub Run_AllFund_CreditStudio_Workflow()
     FilterAllFundCriteria loAllFund, _
         keepBUs:=Array("FI-US", "FI-EMEA", "FI-GMC- Asia", "FI-GMC-ASIA"), _
         keepReviewStatus:=Array("Approved", "Submitted")
-    ' loAllFund is refreshed inside
 
     ' 5) Build Fund CoPER batches of 600 and show modeless controller
     BuildCoperBatches loAllFund, "Fund CoPER", 600
@@ -133,7 +132,7 @@ Public Sub Continue_After_Batches()
 
     ' 9) Convert to table and build mismatch summary (group by Approved CoR, IDs sanitized)
     Set loRecali = EnsureTable(wsRecali, "CoRRecaliTbl")
-    CreateMismatchSummary ThisWorkbook, loRecali, _
+    CreateMismatchSummary wbMain, loRecali, _
         creditCoRColName:="Country of Risk", _
         approvedCoRColName:="Approved CoR", _
         coperColName:="Coper ID", _
@@ -148,7 +147,7 @@ Public Sub Continue_After_Batches()
         CopySheetValues wbMain.Worksheets("CoR Mismatch Summary"), iterWb, "CoR Mismatch Summary"
     End If
 
-    ' Build Stats in iteration file (wording adapted to AllFund)
+    ' Build Stats in iteration file
     BuildStatsSheet iterWb, iterWb.Worksheets("CoR Recali"), allFundCoRMap, allFundRegionMap
 
     ' Save iteration file
@@ -372,8 +371,7 @@ Private Sub BuildStatsSheet(ByVal iterWb As Workbook, _
 
     ' --- Write Global table (AllFund wording) ---
     Dim row As Long: row = 1
-    ws.Cells(row, 1).Value = "Global Stats (AllFund)":
-    row = row + 1
+    ws.Cells(row, 1).Value = "Global Stats (AllFund)": row = row + 1
     ws.Cells(row, 1).Value = "Metric": ws.Cells(row, 2).Value = "Count"
     ws.Range(ws.Cells(row, 1), ws.Cells(row, 2)).Font.Bold = True
     row = row + 1
@@ -399,11 +397,11 @@ Private Sub BuildStatsSheet(ByVal iterWb As Workbook, _
     row = startDataRow
 
     Dim regKey As Variant
-    Dim allRegions As Object: Set allRegions = CreateObject("Scripting.Dictionary")
-    For i = LBound(REGIONS) To UBound(REGIONS): allRegions(REGIONS(i)) = True: Next i
-    For Each regKey In regAllFundTotal.Keys: allRegions(regKey) = True: Next regKey
+    Dim REGIONS_SET As Object: Set REGIONS_SET = CreateObject("Scripting.Dictionary")
+    For i = LBound(REGIONS) To UBound(REGIONS): REGIONS_SET(REGIONS(i)) = True: Next i
+    For Each regKey In regAllFundTotal.Keys: REGIONS_SET(regKey) = True: Next regKey
 
-    For Each regKey In allRegions.Keys
+    For Each regKey In REGIONS_SET.Keys
         ws.Cells(row, 1).Value = CStr(regKey)
         ws.Cells(row, 2).Value = NzLng(regAllFundTotal, regKey)
         ws.Cells(row, 3).Value = NzLng(regAllFundInCredit, regKey)
@@ -438,7 +436,7 @@ Private Function RegionFromBU(ByVal bu As String) As String
     Select Case s
         Case "FI-US": RegionFromBU = "AMRS"
         Case "FI-EMEA": RegionFromBU = "EMEA"
-        Case "FI-GMC-ASIA", "FI-GMC- ASIA", "FI-GMC- ASIA ":
+        Case "FI-GMC-ASIA", "FI-GMC- ASIA", "FI-GMC- ASIA "
             RegionFromBU = "APAC"
         Case Else
             RegionFromBU = ""
@@ -735,21 +733,6 @@ Private Function BuildCoperToCoRMap(ByVal lo As ListObject, ByVal coperCol As St
         Next r
     End If
     Set BuildCoperToCoRMap = dict
-End Function
-
-Private Function BuildCoperToRegionMap(ByVal lo As ListObject, ByVal coperCol As String, ByVal buCol As String) As Object
-    Dim idxC As Long, idxBU As Long, dict As Object, r As Long
-    idxC = GetColumnIndex(lo, coperCol)
-    idxBU = GetColumnIndex(lo, buCol)
-    If idxC = 0 Then Err.Raise vbObjectError + 902, , "Column '" & coperCol & "' not found in AllFund."
-    If idxBU = 0 Then Err.Raise vbObjectError + 903, , "Column '" & buCol & "' not found in AllFund."
-    Set dict = CreateObject("Scripting.Dictionary")
-    If Not lo.DataBodyRange Is Nothing Then
-        For r = 1 To lo.DataBodyRange.Rows.Count
-            dict(SanitizeCoperID(lo.DataBodyRange.Cells(r, idxC).Value)) = Trim$(CStr(lo.DataBodyRange.Cells(r, idxBU).Value))
-        Next r
-    End If
-    Set BuildCoperToRegionMap = dict
 End Function
 
 Private Sub AppendApprovedCoR(ByVal ws As Worksheet, ByVal approvedMap As Object, _
