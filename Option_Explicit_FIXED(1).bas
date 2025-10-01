@@ -509,9 +509,9 @@ Private Sub SaveIterationWorkbook(ByVal wb As Workbook, ByVal outFolder As Strin
     SaveWorkbook wb, outFolder & "\Iteration_" & PrevMonthFileName()
 End Sub
 
-'========================
-' Stats sheet (global + regional + by review status + blanks)
-'========================
+' ===============================
+' ENHANCED STATS (Formatting + %)
+' ===============================
 Private Sub BuildStatsSheet(ByVal iterWb As Workbook, _
                             ByVal recaliWs As Worksheet, _
                             ByVal allFundCoRMap As Object, _
@@ -522,16 +522,22 @@ Private Sub BuildStatsSheet(ByVal iterWb As Workbook, _
     Dim ws As Worksheet: Set ws = iterWb.Worksheets("Stats")
     ws.Cells.Clear
 
+    ' ---- Fonts & layout defaults ----
+    With ws.Parent
+        ' keep defaults; we’ll format section headers and tables explicitly
+    End With
+
+    Dim row As Long: row = 1
+    Dim colCoper As Long, colCreditCoR As Long
+    Dim r As Long
+
     ' Build credit dict (unique Copers -> Credit CoR)
     Dim creditDict As Object: Set creditDict = CreateObject("Scripting.Dictionary")
-    Dim cLastRow As Long, r As Long
-    Dim colCoper As Long, colCreditCoR As Long
-
     colCoper = FindHeader(recaliWs, "Coper ID")
     colCreditCoR = FindHeader(recaliWs, "Country of Risk")
     If colCoper = 0 Or colCreditCoR = 0 Then Err.Raise vbObjectError + 800, , "CoR Recali missing columns."
 
-    cLastRow = recaliWs.Cells(recaliWs.Rows.Count, 1).End(xlUp).Row
+    Dim cLastRow As Long: cLastRow = recaliWs.Cells(recaliWs.Rows.Count, 1).End(xlUp).Row
     For r = 2 To cLastRow
         Dim cid As String, cCoR As String
         cid = SanitizeCoperID(recaliWs.Cells(r, colCoper).Value)
@@ -541,10 +547,9 @@ Private Sub BuildStatsSheet(ByVal iterWb As Workbook, _
         End If
     Next r
 
-    ' Regions / Statuses
+    ' --- counters ---
     Dim STATUSES As Variant: STATUSES = Array("Approved", "Submitted")
 
-    ' Global counters
     Dim gTotal As Long, gCreditTotal As Long, gIn As Long, gOut As Long, gCor As Long, gMis As Long
     Dim gTotalS As Object, gInS As Object, gOutS As Object, gCorS As Object, gMisS As Object
     Set gTotalS = CreateObject("Scripting.Dictionary")
@@ -552,8 +557,11 @@ Private Sub BuildStatsSheet(ByVal iterWb As Workbook, _
     Set gOutS = CreateObject("Scripting.Dictionary")
     Set gCorS = CreateObject("Scripting.Dictionary")
     Set gMisS = CreateObject("Scripting.Dictionary")
+
     Dim s As Variant
-    For Each s In STATUSES: gTotalS(s) = 0: gInS(s) = 0: gOutS(s) = 0: gCorS(s) = 0: gMisS(s) = 0: Next s
+    For Each s In STATUSES
+        gTotalS(s) = 0: gInS(s) = 0: gOutS(s) = 0: gCorS(s) = 0: gMisS(s) = 0
+    Next s
 
     ' Regional by status: dict(reg) -> dict(status)->count
     Dim regTotal As Object, regIn As Object, regOut As Object, regCor As Object, regMis As Object
@@ -564,50 +572,86 @@ Private Sub BuildStatsSheet(ByVal iterWb As Workbook, _
     Set regMis = CreateObject("Scripting.Dictionary")
 
     Dim key As Variant, reg As String, st As String
+
+    ' Iterate AllFund
     For Each key In allFundCoRMap.Keys
         reg = RegionFromBU(allFundRegionMap(key)): If Len(reg) = 0 Then reg = "Unmapped"
         st = ProperStatus(allFundStatusMap(key))
 
-        gTotal = gTotal + 1: gTotalS(st) = CLng(gTotalS(st)) + 1
+        gTotal = gTotal + 1
+        gTotalS(st) = CLng(gTotalS(st)) + 1
         InitRegStat regTotal, reg: regTotal(reg)(st) = CLng(regTotal(reg)(st)) + 1
 
         If creditDict.Exists(key) Then
-            gIn = gIn + 1: gInS(st) = CLng(gInS(st)) + 1
+            gIn = gIn + 1
+            gInS(st) = CLng(gInS(st)) + 1
             InitRegStat regIn, reg: regIn(reg)(st) = CLng(regIn(reg)(st)) + 1
 
             If StrComp(creditDict(key), allFundCoRMap(key), vbTextCompare) = 0 Then
-                gCor = gCor + 1: gCorS(st) = CLng(gCorS(st)) + 1
+                gCor = gCor + 1
+                gCorS(st) = CLng(gCorS(st)) + 1
                 InitRegStat regCor, reg: regCor(reg)(st) = CLng(regCor(reg)(st)) + 1
             Else
-                gMis = gMis + 1: gMisS(st) = CLng(gMisS(st)) + 1
+                gMis = gMis + 1
+                gMisS(st) = CLng(gMisS(st)) + 1
                 InitRegStat regMis, reg: regMis(reg)(st) = CLng(regMis(reg)(st)) + 1
             End If
         Else
-            gOut = gOut + 1: gOutS(st) = CLng(gOutS(st)) + 1
+            gOut = gOut + 1
+            gOutS(st) = CLng(gOutS(st)) + 1
             InitRegStat regOut, reg: regOut(reg)(st) = CLng(regOut(reg)(st)) + 1
         End If
     Next key
 
     gCreditTotal = creditDict.Count
 
-    ' --- Global table ---
-    Dim row As Long: row = 1
-    ws.Cells(row, 1).Value = "Global Stats (AllFund)": row = row + 1
-    ws.Cells(row, 1).Value = "Metric": ws.Cells(row, 2).Value = "Count": ws.Range(ws.Cells(row, 1), ws.Cells(row, 2)).Font.Bold = True
+    ' =========================
+    ' SECTION 1: GLOBAL SUMMARY
+    ' =========================
+    Call WriteSectionHeader(ws, row, "Global Summary")
     row = row + 1
-    ws.Cells(row, 1).Value = "AllFund Total": ws.Cells(row, 2).Value = gTotal: row = row + 1
-    ws.Cells(row, 1).Value = "Credit Total (unique Copers)": ws.Cells(row, 2).Value = gCreditTotal: row = row + 1
-    ws.Cells(row, 1).Value = "AllFund Present in Credit": ws.Cells(row, 2).Value = gIn: row = row + 1
-    ws.Cells(row, 1).Value = "AllFund NOT in Credit": ws.Cells(row, 2).Value = gOut: row = row + 1
-    ws.Cells(row, 1).Value = "CoR Correct in Credit": ws.Cells(row, 2).Value = gCor: row = row + 1
-    ws.Cells(row, 1).Value = "CoR Mismatched (to rectify)": ws.Cells(row, 2).Value = gMis: row = row + 2
-    ws.ListObjects.Add xlSrcRange, ws.Range("A2:B8"), , xlYes
 
-    ' --- Global by Review Status ---
-    ws.Cells(row, 1).Value = "Global by Review Status": row = row + 1
-    ws.Cells(row, 1).Value = "Status": ws.Cells(row, 2).Value = "Total": ws.Cells(row, 3).Value = "Present in Credit": ws.Cells(row, 4).Value = "NOT in Credit": ws.Cells(row, 5).Value = "CoR Correct": ws.Cells(row, 6).Value = "CoR Mismatch"
-    ws.Range(ws.Cells(row, 1), ws.Cells(row, 6)).Font.Bold = True
+    ' Headers
+    ws.Cells(row, 1).Value = "Metric"
+    ws.Cells(row, 2).Value = "Count"
+    ws.Cells(row, 3).Value = "% of AllFund"
+    ws.Cells(row, 4).Value = "Notes"
+    ws.Range(ws.Cells(row, 1), ws.Cells(row, 4)).Font.Bold = True
     row = row + 1
+
+    Dim startGlobal As Long: startGlobal = row
+    ws.Cells(row, 1).Value = "AllFund Total":                        ws.Cells(row, 2).Value = gTotal:     ws.Cells(row, 3).Value = 1:                                ws.Cells(row, 4).Value = "Denominator for %";                 row = row + 1
+    ws.Cells(row, 1).Value = "Credit Total (unique Copers)":          ws.Cells(row, 2).Value = gCreditTotal: ws.Cells(row, 4).Value = "De-duplicated from Credit files": row = row + 1
+    ws.Cells(row, 1).Value = "AllFund Present in Credit":             ws.Cells(row, 2).Value = gIn:        ws.Cells(row, 3).Value = SafePercent(gIn, gTotal):         ws.Cells(row, 4).Value = "Coverage":                         row = row + 1
+    ws.Cells(row, 1).Value = "AllFund NOT in Credit":                 ws.Cells(row, 2).Value = gOut:       ws.Cells(row, 3).Value = SafePercent(gOut, gTotal):        ws.Cells(row, 4).Value = "Gap":                              row = row + 1
+    ws.Cells(row, 1).Value = "CoR Correct in Credit":                 ws.Cells(row, 2).Value = gCor:       ws.Cells(row, 3).Value = SafePercent(gCor, gTotal):        ws.Cells(row, 4).Value = "Correct vs AllFund":               row = row + 1
+    ws.Cells(row, 1).Value = "CoR Mismatched (to rectify)":           ws.Cells(row, 2).Value = gMis:       ws.Cells(row, 3).Value = SafePercent(gMis, gTotal):        ws.Cells(row, 4).Value = "Mismatch vs AllFund":              row = row + 1
+
+    Dim loGlobal As ListObject
+    Set loGlobal = ws.ListObjects.Add(xlSrcRange, ws.Range(ws.Cells(startGlobal - 1, 1), ws.Cells(row - 1, 4)), , xlYes)
+    loGlobal.Name = "GlobalStatsTbl": ApplyModernTableStyle loGlobal
+    ws.Range(ws.Cells(startGlobal, 3), ws.Cells(row - 1, 3)).NumberFormat = "0.0%"
+
+    row = row + 2
+
+    ' =======================================
+    ' SECTION 2: GLOBAL BY REVIEW STATUS (S)
+    ' =======================================
+    Call WriteSectionHeader(ws, row, "Global by Review Status")
+    row = row + 1
+
+    ws.Cells(row, 1).Value = "Status"
+    ws.Cells(row, 2).Value = "Total"
+    ws.Cells(row, 3).Value = "Present in Credit"
+    ws.Cells(row, 4).Value = "NOT in Credit"
+    ws.Cells(row, 5).Value = "CoR Correct"
+    ws.Cells(row, 6).Value = "CoR Mismatch"
+    ws.Cells(row, 7).Value = "Present % of Status"
+    ws.Cells(row, 8).Value = "Mismatch % of Status"
+    ws.Range(ws.Cells(row, 1), ws.Cells(row, 8)).Font.Bold = True
+    row = row + 1
+
+    Dim startGStatus As Long: startGStatus = row
     For Each s In STATUSES
         ws.Cells(row, 1).Value = s
         ws.Cells(row, 2).Value = NzLng2(gTotalS, s)
@@ -615,102 +659,140 @@ Private Sub BuildStatsSheet(ByVal iterWb As Workbook, _
         ws.Cells(row, 4).Value = NzLng2(gOutS, s)
         ws.Cells(row, 5).Value = NzLng2(gCorS, s)
         ws.Cells(row, 6).Value = NzLng2(gMisS, s)
+        ws.Cells(row, 7).Value = SafePercent(NzLng2(gInS, s), NzLng2(gTotalS, s))
+        ws.Cells(row, 8).Value = SafePercent(NzLng2(gMisS, s), NzLng2(gTotalS, s))
         row = row + 1
     Next s
-    ws.ListObjects.Add xlSrcRange, ws.Range(ws.Cells(row - 2, 1), ws.Cells(row - 1, 6)), , xlYes
+
+    Dim loGStatus As ListObject
+    Set loGStatus = ws.ListObjects.Add(xlSrcRange, ws.Range(ws.Cells(startGStatus - 1, 1), ws.Cells(row - 1, 8)), , xlYes)
+    loGStatus.Name = "GlobalByStatusTbl": ApplyModernTableStyle loGStatus
+    ws.Range(ws.Cells(startGStatus, 7), ws.Cells(row - 1, 8)).NumberFormat = "0.0%"
+
+    row = row + 2
+
+    ' ===========================================
+    ' SECTION 3: REGIONAL BY REVIEW STATUS (R,S)
+    ' ===========================================
+    Call WriteSectionHeader(ws, row, "Regional by Review Status")
     row = row + 1
 
-    ' --- Regional by Review Status ---
-    ws.Cells(row, 1).Value = "Regional by Review Status": row = row + 1
-    ws.Cells(row, 1).Value = "Region": ws.Cells(row, 2).Value = "Status": ws.Cells(row, 3).Value = "Total": ws.Cells(row, 4).Value = "Present in Credit": ws.Cells(row, 5).Value = "NOT in Credit": ws.Cells(row, 6).Value = "CoR Correct": ws.Cells(row, 7).Value = "CoR Mismatch"
-    ws.Range(ws.Cells(row, 1), ws.Cells(row, 7)).Font.Bold = True
+    ws.Cells(row, 1).Value = "Region"
+    ws.Cells(row, 2).Value = "Status"
+    ws.Cells(row, 3).Value = "Total"
+    ws.Cells(row, 4).Value = "Present in Credit"
+    ws.Cells(row, 5).Value = "NOT in Credit"
+    ws.Cells(row, 6).Value = "CoR Correct"
+    ws.Cells(row, 7).Value = "CoR Mismatch"
+    ws.Cells(row, 8).Value = "Present % of Status"
+    ws.Cells(row, 9).Value = "Mismatch % of Status"
+    ws.Range(ws.Cells(row, 1), ws.Cells(row, 9)).Font.Bold = True
     row = row + 1
 
-    Dim regKey As Variant
-    Dim startRegional As Long: startRegional = row - 1
+    Dim startReg As Long: startReg = row
+    Dim regKey As Variant, statusKey As Variant
     For Each regKey In UnionKeys(regTotal, regIn, regOut, regCor, regMis).Keys
-        For Each s In STATUSES
+        For Each statusKey In STATUSES
             ws.Cells(row, 1).Value = CStr(regKey)
-            ws.Cells(row, 2).Value = s
-            ws.Cells(row, 3).Value = NzLngNested(regTotal, regKey, s)
-            ws.Cells(row, 4).Value = NzLngNested(regIn, regKey, s)
-            ws.Cells(row, 5).Value = NzLngNested(regOut, regKey, s)
-            ws.Cells(row, 6).Value = NzLngNested(regCor, regKey, s)
-            ws.Cells(row, 7).Value = NzLngNested(regMis, regKey, s)
+            ws.Cells(row, 2).Value = statusKey
+            ws.Cells(row, 3).Value = NzLngNested(regTotal, regKey, statusKey)
+            ws.Cells(row, 4).Value = NzLngNested(regIn, regKey, statusKey)
+            ws.Cells(row, 5).Value = NzLngNested(regOut, regKey, statusKey)
+            ws.Cells(row, 6).Value = NzLngNested(regCor, regKey, statusKey)
+            ws.Cells(row, 7).Value = NzLngNested(regMis, regKey, statusKey)
+            ws.Cells(row, 8).Value = SafePercent(NzLngNested(regIn, regKey, statusKey), NzLngNested(regTotal, regKey, statusKey))
+            ws.Cells(row, 9).Value = SafePercent(NzLngNested(regMis, regKey, statusKey), NzLngNested(regTotal, regKey, statusKey))
             row = row + 1
-        Next s
+        Next statusKey
     Next regKey
-    If row - 1 > startRegional Then ws.ListObjects.Add xlSrcRange, ws.Range(ws.Cells(startRegional, 1), ws.Cells(row - 1, 7)), , xlYes
 
+    If row > startReg Then
+        Dim loReg As ListObject
+        Set loReg = ws.ListObjects.Add(xlSrcRange, ws.Range(ws.Cells(startReg - 1, 1), ws.Cells(row - 1, 9)), , xlYes)
+        loReg.Name = "RegionalByStatusTbl": ApplyModernTableStyle loReg
+        ws.Range(ws.Cells(startReg, 8), ws.Cells(row - 1, 9)).NumberFormat = "0.0%"
+    End If
+
+    row = row + 2
+
+    ' ===========================
+    ' SECTION 4: BLANK CoR SPLIT
+    ' ===========================
+    Call WriteSectionHeader(ws, row, "Blank CoR in AllFund (exported before processing)")
     row = row + 1
 
-    ' --- Blank CoR section ---
-    ws.Cells(row, 1).Value = "Blank CoR in AllFund (exported & removed before processing)": row = row + 1
-    ws.Cells(row, 1).Value = "Region": ws.Cells(row, 2).Value = "Approved": ws.Cells(row, 3).Value = "Submitted": ws.Cells(row, 4).Value = "Total"
-    ws.Range(ws.Cells(row, 1), ws.Cells(row, 4)).Font.Bold = True
+    ws.Cells(row, 1).Value = "Region"
+    ws.Cells(row, 2).Value = "Approved"
+    ws.Cells(row, 3).Value = "Submitted"
+    ws.Cells(row, 4).Value = "Total Blanks"
+    ws.Cells(row, 5).Value = "% of Regional AllFund"
+    ws.Range(ws.Cells(row, 1), ws.Cells(row, 5)).Font.Bold = True
     row = row + 1
 
     Dim regs As Variant: regs = Array("AMRS", "EMEA", "APAC")
-    Dim rr As Long, aVal As Long, sVal As Long
-    Dim startBlanks As Long: startBlanks = row - 1
+    Dim startBlank As Long: startBlank = row
+    Dim rr As Long, aVal As Long, sVal As Long, totBlank As Long, regTotalAllFund As Long
+
     For rr = LBound(regs) To UBound(regs)
-        aVal = NzLng3(blanksCounters, regs(rr) & "_Approved")
-        sVal = NzLng3(blanksCounters, regs(rr) & "_Submitted")
+        aVal = GetDictLong(blanksCounters, regs(rr) & "_Approved")
+        sVal = GetDictLong(blanksCounters, regs(rr) & "_Submitted")
+        totBlank = aVal + sVal
+
+        ' Regional allfund = sum of Approved+Submitted in regTotal for that region
+        regTotalAllFund = 0
+        If regTotal.Exists(regs(rr)) Then
+            regTotalAllFund = NzLngNested(regTotal, regs(rr), "Approved") + NzLngNested(regTotal, regs(rr), "Submitted")
+        End If
+
         ws.Cells(row, 1).Value = regs(rr)
         ws.Cells(row, 2).Value = aVal
         ws.Cells(row, 3).Value = sVal
-        ws.Cells(row, 4).Value = aVal + sVal
+        ws.Cells(row, 4).Value = totBlank
+        ws.Cells(row, 5).Value = SafePercent(totBlank, regTotalAllFund)
         row = row + 1
     Next rr
-    ws.ListObjects.Add xlSrcRange, ws.Range(ws.Cells(startBlanks, 1), ws.Cells(row - 1, 4)), , xlYes
 
+    Dim loBlank As ListObject
+    Set loBlank = ws.ListObjects.Add(xlSrcRange, ws.Range(ws.Cells(startBlank - 1, 1), ws.Cells(row - 1, 5)), , xlYes)
+    loBlank.Name = "BlankCoRTbl": ApplyModernTableStyle loBlank
+    ws.Range(ws.Cells(startBlank, 5), ws.Cells(row - 1, 5)).NumberFormat = "0.0%"
+
+    ' --- polish ---
     ws.Columns.AutoFit
 End Sub
 
-Private Function NzLng2(ByVal dict As Object, ByVal key As Variant) As Long
-    If dict Is Nothing Then NzLng2 = 0: Exit Function
-    If dict.Exists(key) Then NzLng2 = CLng(dict(key)) Else NzLng2 = 0
-End Function
-
-Private Function NzLngNested(ByVal dict As Object, ByVal regKey As Variant, ByVal statKey As Variant) As Long
-    If dict Is Nothing Then NzLngNested = 0: Exit Function
-    If dict.Exists(regKey) Then
-        If dict(regKey).Exists(statKey) Then NzLngNested = CLng(dict(regKey)(statKey)) Else NzLngNested = 0
-    Else
-        NzLngNested = 0
-    End If
-End Function
-
-Private Sub InitRegStat(ByRef dict As Object, ByVal reg As String)
-    If Not dict.Exists(reg) Then
-        Dim inner As Object: Set inner = CreateObject("Scripting.Dictionary")
-        inner("Approved") = 0
-        inner("Submitted") = 0
-        dict.Add reg, inner
-    End If
+' ---------- helpers used by BuildStatsSheet ----------
+Private Sub WriteSectionHeader(ByVal ws As Worksheet, ByVal atRow As Long, ByVal title As String)
+    With ws.Cells(atRow, 1)
+        .Value = title
+        .Font.Bold = True
+        .Font.Size = 14
+    End With
 End Sub
 
-Private Function UnionKeys(ParamArray dicts() As Variant) As Object
-    Dim out As Object: Set out = CreateObject("Scripting.Dictionary")
-    Dim i As Long, k As Variant
-    For i = LBound(dicts) To UBound(dicts)
-        If Not dicts(i) Is Nothing Then
-            For Each k In dicts(i).Keys
-                out(k) = True
-            Next k
-        End If
-    Next i
-    Set UnionKeys = out
+Private Sub ApplyModernTableStyle(ByRef lo As ListObject)
+    On Error Resume Next
+    lo.TableStyle = "TableStyleMedium9"
+    lo.ShowTableStyleRowStripes = True
+    lo.ShowTableStyleColumnStripes = False
+    On Error GoTo 0
+End Sub
+
+Private Function GetDictLong(ByVal dict As Object, ByVal key As Variant) As Long
+    If dict Is Nothing Then
+        GetDictLong = 0
+    ElseIf dict.Exists(key) Then
+        GetDictLong = CLng(dict(key))
+    Else
+        GetDictLong = 0
+    End If
 End Function
 
-Private Function ProperStatus(ByVal s As String) As String
-    s = Trim$(s)
-    If UCase$(s) = "APPROVED" Then
-        ProperStatus = "Approved"
-    ElseIf UCase$(s) = "SUBMITTED" Then
-        ProperStatus = "Submitted"
+Private Function SafePercent(ByVal num As Long, ByVal den As Long) As Double
+    If den <= 0 Then
+        SafePercent = 0
     Else
-        ProperStatus = s
+        SafePercent = num / den
     End If
 End Function
 
