@@ -704,11 +704,14 @@ Private Function UnionKeys(ParamArray dicts() As Variant) As Object
 End Function
 
 Private Function ProperStatus(ByVal s As String) As String
-    s = Trim$(s)
-    If UCase$(s) = "APPROVED" Then ProperStatus = "Approved" _
-    ElseIf UCase$(s) = "SUBMITTED" Then ProperStatus = "Submitted" _
-    Else ProperStatus = s
+    s = Trim$(CStr(s))
+    Select Case UCase$(s)
+        Case "APPROVED":   ProperStatus = "Approved"
+        Case "SUBMITTED":  ProperStatus = "Submitted"
+        Case Else:         ProperStatus = s
+    End Select
 End Function
+
 
 '========================
 ' Save Pending (AllFund copers NOT in Credit Studio)
