@@ -188,9 +188,15 @@ Private Function JoinRange(ByRef arr() As String, ByVal startIdx As Long, ByVal 
 End Function
 
 Private Function IsArrayAllocated(ByRef arr() As String) As Boolean
-    On Error Resume Next
-    IsArrayAllocated = (Not arr Is Nothing) And (LBound(arr) <= UBound(arr))
-    On Error GoTo 0
+    ' Works for uninitialized dynamic arrays without relying on Is Nothing
+    On Error GoTo EH
+    Dim lb As Long, ub As Long
+    lb = LBound(arr)
+    ub = UBound(arr)
+    IsArrayAllocated = (ub >= lb)
+    Exit Function
+EH:
+    IsArrayAllocated = False
 End Function
 
 '========================
