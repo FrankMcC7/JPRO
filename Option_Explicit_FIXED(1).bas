@@ -1432,3 +1432,53 @@ Private Function ProperStatus(ByVal s As Variant) As String
     End Select
 End Function
 
+
+' Ensure a nested region→status counter dict exists with zeroed keys
+Private Sub InitRegStat(ByRef dict As Object, ByVal reg As String)
+    If dict Is Nothing Then Set dict = CreateObject("Scripting.Dictionary")
+    If Not dict.Exists(reg) Then
+        Dim s As Object
+        Set s = CreateObject("Scripting.Dictionary")
+        s("Approved") = 0
+        s("Submitted") = 0
+        dict.Add reg, s
+    End If
+End Sub
+
+' Safe Long from a 1-level dictionary; 0 if missing
+Private Function NzLng2(ByVal dict As Object, ByVal key As Variant) As Long
+    If (Not dict Is Nothing) And dict.Exists(key) Then
+        If IsNumeric(dict(key)) Then NzLng2 = CLng(dict(key)) Else NzLng2 = 0
+    Else
+        NzLng2 = 0
+    End If
+End Function
+
+' Safe Long from a 2-level dictionary: dict(reg)(status); 0 if missing
+Private Function NzLngNested(ByVal dict As Object, ByVal regKey As Variant, ByVal statusKey As Variant) As Long
+    If dict Is Nothing Then Exit Function
+    If Not dict.Exists(regKey) Then Exit Function
+    Dim inner As Object
+    Set inner = dict(regKey)
+    If inner Is Nothing Then Exit Function
+    If inner.Exists(statusKey) Then
+        If IsNumeric(inner(statusKey)) Then NzLngNested = CLng(inner(statusKey))
+    End If
+End Function
+
+' Union of top-level keys across up to 5 dictionaries; returns a dictionary of unique keys
+Private Function UnionKeys(ByVal d1 As Object, _
+                           Optional ByVal d2 As Object, _
+                           Optional ByVal d3 As Object, _
+                           Optional ByVal d4 As Object, _
+                           Optional ByVal d5 As Object) As Object
+    Dim u As Object: Set u = CreateObject("Scripting.Dictionary")
+    Dim k As Variant
+    If Not d1 Is Nothing Then For Each k In d1.Keys: If Not u.Exists(k) Then u.Add k, True: Next k
+    If Not d2 Is Nothing Then For Each k In d2.Keys: If Not u.Exists(k) Then u.Add k, True: Next k
+    If Not d3 Is Nothing Then For Each k In d3.Keys: If Not u.Exists(k) Then u.Add k, True: Next k
+    If Not d4 Is Nothing Then For Each k In d4.Keys: If Not u.Exists(k) Then u.Add k, True: Next k
+    If Not d5 Is Nothing Then For Each k In d5.Keys: If Not u.Exists(k) Then u.Add k, True: Next k
+    Set UnionKeys = u
+End Function
+
