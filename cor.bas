@@ -7,6 +7,13 @@ Public Sub Run_ApprovedFunds_CreditStudio_Workflow()
     On Error GoTo Fail
 
     Dim wbMain As Workbook: Set wbMain = ThisWorkbook
+
+    ' NEW: refuse to run if workbook structure is protected (cannot add/delete sheets)
+    If IsStructureProtected(wbMain) Then
+        MsgBox "This workbook's structure is protected. Unprotect it (Review → Protect Workbook) and run again.", vbCritical
+        Exit Sub
+    End If
+
     Dim wsDate As Worksheet, wsRecali As Worksheet
     Dim approvedPath As String, creditPath As String
     Dim wbApproved As Workbook, wbCredit As Workbook
@@ -29,7 +36,7 @@ Public Sub Run_ApprovedFunds_CreditStudio_Workflow()
 
     ' 4) Keep only Business Unit in {FI-GMC-ASIA, FI-US, FI-EMEA}
     FilterKeepOnlyBusinessUnits loApproved, Array("FI-GMC-ASIA", "FI-US", "FI-EMEA")
-    ' loApproved is refreshed inside the sub (passed ByRef)
+    ' loApproved refreshed inside the sub
 
     ' 5) Join Fund CoPER values, copy to clipboard, show copy-again / move-on loop
     joinedCoper = JoinColumnValues(loApproved, "Fund CoPER", ",")
@@ -59,7 +66,7 @@ Public Sub Run_ApprovedFunds_CreditStudio_Workflow()
     Set wbCredit = Workbooks.Open(Filename:=creditPath, ReadOnly:=True)
 
     ' 6) Create a new sheet in MAIN file named as today's date
-    Set wsDate = CreateDatedSheet(wbMain) ' (not used further but created as requested)
+    Set wsDate = CreateDatedSheet(wbMain)
 
     ' 7) From credit studio, convert to table and copy "Coper ID" & "Country of Risk" to new sheet "CoR Recali"
     Set loCredit = EnsureTable(wbCredit.Worksheets(1), "CreditTbl")
@@ -121,7 +128,6 @@ Private Function EnsureTable(ByVal ws As Worksheet, ByVal tableName As String) A
     Dim lo As ListObject
     Dim rng As Range
 
-    ' If there is already a table, use it
     If ws.ListObjects.Count > 0 Then
         Set lo = ws.ListObjects(1)
         On Error Resume Next
@@ -195,9 +201,7 @@ Private Sub FilterKeepOnlyBusinessUnits(ByRef lo As ListObject, ByVal keepArr As
         ws.Cells.Clear
         tmp.UsedRange.Copy ws.Range("A1")
 
-        Application.DisplayAlerts = False
-        tmp.Delete
-        Application.DisplayAlerts = True
+        SafeDeleteSheet tmp ' <<< SAFE DELETE
     End If
     On Error GoTo 0
 
@@ -251,7 +255,7 @@ Private Sub CopyToClipboard(ByVal textVal As String)
     End If
     On Error GoTo 0
 
-    ' Fallback using hidden sheet
+    ' Fallback using hidden sheet (safe add/delete)
     prevScr = Application.ScreenUpdating
     Application.ScreenUpdating = False
     Set wsTmp = ThisWorkbook.Worksheets.Add
@@ -259,9 +263,9 @@ Private Sub CopyToClipboard(ByVal textVal As String)
     wsTmp.Range("A1").Value = textVal
     wsTmp.Range("A1").Copy
     Application.CutCopyMode = False
-    Application.DisplayAlerts = False
-    wsTmp.Delete
-    Application.DisplayAlerts = True
+
+    SafeDeleteSheet wsTmp ' <<< SAFE DELETE
+
     Application.ScreenUpdating = prevScr
 End Sub
 
@@ -285,9 +289,7 @@ End Function
 
 Private Function EnsureSheet(ByVal wb As Workbook, ByVal name As String, Optional ByVal recreate As Boolean = False) As Worksheet
     If recreate And SheetExists(wb, name) Then
-        Application.DisplayAlerts = False
-        wb.Worksheets(name).Delete
-        Application.DisplayAlerts = True
+        SafeDeleteSheet wb.Worksheets(name) ' <<< SAFE DELETE
     End If
 
     If SheetExists(wb, name) Then
@@ -447,9 +449,7 @@ Private Sub CreateMismatchSummary(ByVal wb As Workbook, ByVal loRecali As ListOb
     ' If no mismatches, remove any old summary and exit
     If dict.Count = 0 Then
         If SheetExists(wb, summarySheetName) Then
-            Application.DisplayAlerts = False
-            wb.Worksheets(summarySheetName).Delete
-            Application.DisplayAlerts = True
+            SafeDeleteSheet wb.Worksheets(summarySheetName) ' <<< SAFE DELETE
         End If
         Exit Sub
     End If
@@ -493,3 +493,36 @@ Private Function JoinUniqueFromCollection(ByVal col As Collection, ByVal delim A
     Next i
     JoinUniqueFromCollection = s
 End Function
+
+' =======================
+' Safe utilities (fix 1004 delete failures)
+' =======================
+
+Private Function IsStructureProtected(ByVal wb As Workbook) As Boolean
+    On Error Resume Next
+    IsStructureProtected = wb.ProtectStructure
+    On Error GoTo 0
+End Function
+
+Private Sub SafeDeleteSheet(ByVal ws As Worksheet)
+    Dim wb As Workbook
+    Set wb = ws.Parent
+
+    ' If structure is protected or only one sheet remains, do NOT delete
+    If IsStructureProtected(wb) Then Exit Sub
+    If wb.Worksheets.Count <= 1 Then Exit Sub
+
+    ' Make sure sheet is visible before delete (Excel can be fussy)
+    On Error Resume Next
+    ws.Visible = xlSheetVisible
+    On Error GoTo 0
+
+    ' Delete with alerts suppressed
+    Dim prevAlerts As Boolean
+    prevAlerts = Application.DisplayAlerts
+    Application.DisplayAlerts = False
+    On Error Resume Next
+    ws.Delete
+    On Error GoTo 0
+    Application.DisplayAlerts = prevAlerts
+End Sub
