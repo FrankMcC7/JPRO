@@ -1,16 +1,41 @@
 Option Explicit
 
-' =======================
-' Entry Point
-' =======================
+'========================
+' Clipboard API (fallback)
+'========================
+#If VBA7 Then
+    Private Declare PtrSafe Function OpenClipboard Lib "user32" (ByVal hwnd As LongPtr) As Long
+    Private Declare PtrSafe Function CloseClipboard Lib "user32" () As Long
+    Private Declare PtrSafe Function EmptyClipboard Lib "user32" () As Long
+    Private Declare PtrSafe Function SetClipboardData Lib "user32" (ByVal wFormat As Long, ByVal hMem As LongPtr) As LongPtr
+    Private Declare PtrSafe Function GlobalAlloc Lib "kernel32" (ByVal uFlags As Long, ByVal dwBytes As LongPtr) As LongPtr
+    Private Declare PtrSafe Function GlobalLock Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
+    Private Declare PtrSafe Function GlobalUnlock Lib "kernel32" (ByVal hMem As LongPtr) As Long
+    Private Declare PtrSafe Function lstrcpyW Lib "kernel32" (ByVal lpString1 As LongPtr, ByVal lpString2 As LongPtr) As LongPtr
+    Private Const GMEM_MOVEABLE As Long = &H2
+    Private Const CF_UNICODETEXT As Long = 13&
+#Else
+    Private Declare Function OpenClipboard Lib "user32" (ByVal hwnd As Long) As Long
+    Private Declare Function CloseClipboard Lib "user32" () As Long
+    Private Declare Function EmptyClipboard Lib "user32" () As Long
+    Private Declare Function SetClipboardData Lib "user32" (ByVal wFormat As Long, ByVal hMem As Long) As Long
+    Private Declare Function GlobalAlloc Lib "kernel32" (ByVal uFlags As Long, ByVal dwBytes As Long) As Long
+    Private Declare Function GlobalLock Lib "kernel32" (ByVal hMem As Long) As Long
+    Private Declare Function GlobalUnlock Lib "kernel32" (ByVal hMem As Long) As Long
+    Private Declare Function lstrcpyW Lib "kernel32" (ByVal lpString1 As Long, ByVal lpString2 As Long) As Long
+    Private Const GMEM_MOVEABLE As Long = &H2
+    Private Const CF_UNICODETEXT As Long = 13&
+#End If
+
+'========================
+' Entry point
+'========================
 Public Sub Run_ApprovedFunds_CreditStudio_Workflow()
     On Error GoTo Fail
 
     Dim wbMain As Workbook: Set wbMain = ThisWorkbook
-
-    ' NEW: refuse to run if workbook structure is protected (cannot add/delete sheets)
     If IsStructureProtected(wbMain) Then
-        MsgBox "This workbook's structure is protected. Unprotect it (Review → Protect Workbook) and run again.", vbCritical
+        MsgBox "Workbook structure is protected. Unprotect (Review → Protect Workbook) and run again.", vbCritical
         Exit Sub
     End If
 
@@ -20,75 +45,73 @@ Public Sub Run_ApprovedFunds_CreditStudio_Workflow()
     Dim loApproved As ListObject, loCredit As ListObject
     Dim joinedCoper As String
     Dim resp As VbMsgBoxResult
+    Dim approvedMap As Object
+    Dim loRecali As ListObject
 
-    ' 1) Ask user to provide approved funds CSV
+    ' 1) Approved funds CSV
     approvedPath = PickFile("Select APPROVED FUNDS CSV", "CSV Files (*.csv)", "*.csv")
     If Len(approvedPath) = 0 Then MsgBox "Operation cancelled.", vbInformation: Exit Sub
 
-    ' 2) Open CSV and delete first row (headers are on row 2)
+    ' 2) Open CSV, delete first row (row 2 has headers)
     Set wbApproved = Workbooks.Open(Filename:=approvedPath, Local:=True)
     With wbApproved.Worksheets(1)
         .Rows(1).Delete
     End With
 
-    ' 3) Convert data to table with headers
+    ' 3) Convert to table with headers
     Set loApproved = EnsureTable(wbApproved.Worksheets(1), "ApprovedTbl")
 
-    ' 4) Keep only Business Unit in {FI-GMC-ASIA, FI-US, FI-EMEA}
+    ' 4) Keep only specific Business Units
     FilterKeepOnlyBusinessUnits loApproved, Array("FI-GMC-ASIA", "FI-US", "FI-EMEA")
-    ' loApproved refreshed inside the sub
+    ' loApproved is refreshed inside that procedure
 
-    ' 5) Join Fund CoPER values, copy to clipboard, show copy-again / move-on loop
+    ' 5) Prepare Fund CoPER list, copy to clipboard; allow copy-again loop
     joinedCoper = JoinColumnValues(loApproved, "Fund CoPER", ",")
     If Len(joinedCoper) = 0 Then
-        MsgBox "No 'Fund CoPER' values found after filtering. Cannot proceed.", vbCritical
+        MsgBox "No 'Fund CoPER' values after filtering. Cannot proceed.", vbCritical
         GoTo Cleanup
     End If
-
     CopyToClipboard joinedCoper
+
     Do
         resp = MsgBox( _
-                "Fund CoPER values have been copied for Credit Studio." & vbCrLf & vbCrLf & _
-                "• Click YES to copy the same again (if you got distracted)." & vbCrLf & _
-                "• Click NO to MOVE ON (continue the process).", _
-                vbYesNo + vbInformation, "Copied for Credit Studio")
+            "Fund CoPER values have been copied for Credit Studio." & vbCrLf & vbCrLf & _
+            "• Click YES to copy again." & vbCrLf & _
+            "• Click NO to MOVE ON.", _
+            vbYesNo + vbInformation, "Copied for Credit Studio")
         If resp = vbYes Then
             CopyToClipboard joinedCoper
         Else
-            Exit Do    ' Move On
+            Exit Do
         End If
     Loop
 
-    ' 5b) Ask user to upload the Credit Studio xlsx file
+    ' 5b) Credit Studio xlsx
     creditPath = PickFile("Select CREDIT STUDIO XLSX", "Excel Files (*.xlsx)", "*.xlsx")
     If Len(creditPath) = 0 Then MsgBox "Operation cancelled.", vbInformation: GoTo Cleanup
-
     Set wbCredit = Workbooks.Open(Filename:=creditPath, ReadOnly:=True)
 
-    ' 6) Create a new sheet in MAIN file named as today's date
+    ' 6) Create new sheet named today's date in MAIN workbook
     Set wsDate = CreateDatedSheet(wbMain)
 
-    ' 7) From credit studio, convert to table and copy "Coper ID" & "Country of Risk" to new sheet "CoR Recali"
+    ' 7) Credit Studio → table; copy columns to "CoR Recali"
     Set loCredit = EnsureTable(wbCredit.Worksheets(1), "CreditTbl")
-    Set wsRecali = EnsureSheet(wbMain, "CoR Recali", True) ' recreate fresh
+    Set wsRecali = EnsureSheet(wbMain, "CoR Recali", True) ' recreate
     CopyColumnsByName loCredit, wsRecali, Array("Coper ID", "Country of Risk")
 
-    ' 8) Lookup Approved CoR by Coper (Approved: Fund CoPER -> Country of Risk)
-    Dim approvedMap As Object
+    ' 8) Map Approved (Fund CoPER -> Country of Risk) and append Approved CoR in Recali
     Set approvedMap = BuildCoperToCoRMap(loApproved, "Fund CoPER", "Country of Risk")
     AppendApprovedCoR wsRecali, approvedMap, "Coper ID", "Approved CoR"
 
-    ' 9) Make "CoR Recali" a table; compare CoR vs Approved CoR; create mismatch summary
-    Dim loRecali As ListObject
+    ' 9) Table-ize Recali; mismatch summary (unique CoR, joined Copers)
     Set loRecali = EnsureTable(wsRecali, "CoRRecaliTbl")
+    CreateMismatchSummary wbMain, loRecali, _
+        creditCoRColName:="Country of Risk", _
+        approvedCoRColName:="Approved CoR", _
+        coperColName:="Coper ID", _
+        summarySheetName:="CoR Mismatch Summary"
 
-    CreateMismatchSummary ThisWorkbook, loRecali, _
-                          creditCoRColName:="Country of Risk", _
-                          approvedCoRColName:="Approved CoR", _
-                          coperColName:="Coper ID", _
-                          summarySheetName:="CoR Mismatch Summary"
-
-    MsgBox "Done. Sheets created: '" & wsDate.Name & "', 'CoR Recali', and (if mismatches) 'CoR Mismatch Summary'.", vbInformation
+    MsgBox "Done. Sheets created: '" & wsDate.Name & "', 'CoR Recali', and (if needed) 'CoR Mismatch Summary'.", vbInformation
     GoTo Cleanup
 
 Fail:
@@ -100,16 +123,12 @@ Cleanup:
     If Not wbApproved Is Nothing Then wbApproved.Close SaveChanges:=True
 End Sub
 
-' =======================
-' Helpers
-' =======================
-
-Private Function PickFile(ByVal promptTitle As String, _
-                          ByVal filterDesc As String, _
-                          ByVal filterPattern As String) As String
+'========================
+' File pickers / sheets
+'========================
+Private Function PickFile(ByVal promptTitle As String, ByVal filterDesc As String, ByVal filterPattern As String) As String
     Dim fd As FileDialog
     Set fd = Application.FileDialog(msoFileDialogFilePicker)
-
     With fd
         .Title = promptTitle
         .Filters.Clear
@@ -124,6 +143,39 @@ Private Function PickFile(ByVal promptTitle As String, _
     Set fd = Nothing
 End Function
 
+Private Function CreateDatedSheet(ByVal wb As Workbook) As Worksheet
+    Dim baseName As String, nameCandidate As String
+    Dim n As Long
+    baseName = Format(Date, "yyyy-mm-dd")
+    nameCandidate = baseName
+    n = 1
+    Do While SheetExists(wb, nameCandidate)
+        n = n + 1
+        nameCandidate = baseName & " (" & n & ")"
+    Loop
+    Set CreateDatedSheet = wb.Worksheets.Add(After:=wb.Sheets(wb.Sheets.Count))
+    CreateDatedSheet.Name = nameCandidate
+End Function
+
+Private Function EnsureSheet(ByVal wb As Workbook, ByVal name As String, Optional ByVal recreate As Boolean = False) As Worksheet
+    If recreate And SheetExists(wb, name) Then SafeDeleteSheet wb.Worksheets(name)
+    If SheetExists(wb, name) Then
+        Set EnsureSheet = wb.Worksheets(name)
+    Else
+        Set EnsureSheet = wb.Worksheets.Add(After:=wb.Sheets(wb.Sheets.Count))
+        EnsureSheet.Name = name
+    End If
+End Function
+
+Private Function SheetExists(ByVal wb As Workbook, ByVal name As String) As Boolean
+    On Error Resume Next
+    SheetExists = Not wb.Worksheets(name) Is Nothing
+    On Error GoTo 0
+End Function
+
+'========================
+' Table utilities
+'========================
 Private Function EnsureTable(ByVal ws As Worksheet, ByVal tableName As String) As ListObject
     Dim lo As ListObject
     Dim rng As Range
@@ -140,7 +192,7 @@ Private Function EnsureTable(ByVal ws As Worksheet, ByVal tableName As String) A
     Set rng = TrimUsedRange(ws)
     If rng Is Nothing Then Err.Raise 1001, , "No data found on sheet '" & ws.Name & "'."
 
-    Set lo = ws.ListObjects.Add(SourceType:=xlSrcRange, Source:=rng, XlListObjectHasHeaders:=xlYes)
+    Set lo = ws.ListObjects.Add(xlSrcRange, rng, , xlYes)
     On Error Resume Next
     lo.Name = tableName
     On Error GoTo 0
@@ -151,7 +203,6 @@ End Function
 Private Function TrimUsedRange(ByVal ws As Worksheet) As Range
     Dim ur As Range
     Dim r1 As Long, r2 As Long, c1 As Long, c2 As Long
-
     Set ur = ws.UsedRange
     If ur Is Nothing Then Exit Function
 
@@ -170,65 +221,67 @@ Private Function TrimUsedRange(ByVal ws As Worksheet) As Range
     End If
 End Function
 
+Private Function GetColumnIndex(ByVal lo As ListObject, ByVal headerName As String) As Long
+    Dim i As Long
+    For i = 1 To lo.HeaderRowRange.Columns.Count
+        If Trim$(LCase$(CStr(lo.HeaderRowRange.Cells(1, i).Value))) = Trim$(LCase$(headerName)) Then
+            GetColumnIndex = i
+            Exit Function
+        End If
+    Next i
+    GetColumnIndex = 0
+End Function
+
+'========================
+' Filtering + transforms
+'========================
 Private Sub FilterKeepOnlyBusinessUnits(ByRef lo As ListObject, ByVal keepArr As Variant)
-    Dim ws As Worksheet
-    Dim buCol As Long
+    Dim ws As Worksheet: Set ws = lo.Parent
+    Dim buCol As Long: buCol = GetColumnIndex(lo, "Business Unit")
     Dim rngVisible As Range
     Dim tmp As Worksheet
     Dim loIt As ListObject
 
-    Set ws = lo.Parent
-    buCol = GetColumnIndex(lo, "Business Unit")
     If buCol = 0 Then Err.Raise 1002, , "Column 'Business Unit' not found."
 
     On Error Resume Next
     lo.Range.AutoFilter Field:=buCol, Criteria1:=keepArr, Operator:=xlFilterValues
     On Error GoTo 0
 
-    ' If nothing visible except header, SpecialCells throws 1004. Handle it.
+    ' If only headers visible, SpecialCells throws.
     On Error Resume Next
     Set rngVisible = lo.Range.SpecialCells(xlCellTypeVisible)
     If Err.Number <> 0 Then
         Err.Clear
-        ' Rebuild sheet with headers only (no matching rows)
         ws.Cells.Clear
         ws.Range("A1").Resize(1, lo.HeaderRowRange.Columns.Count).Value = lo.HeaderRowRange.Value
     Else
-        ' Copy kept rows to a temporary sheet then replace original
         Set tmp = ws.Parent.Worksheets.Add(After:=ws)
         rngVisible.Copy tmp.Range("A1")
 
         ws.Cells.Clear
         tmp.UsedRange.Copy ws.Range("A1")
-
-        SafeDeleteSheet tmp ' <<< SAFE DELETE
+        SafeDeleteSheet tmp
     End If
     On Error GoTo 0
 
-    ' Remove any existing tables and recreate a clean one
+    ' Drop any left-over tables, recreate clean one
     If ws.ListObjects.Count > 0 Then
         For Each loIt In ws.ListObjects
             loIt.Delete
         Next loIt
     End If
-
     Set lo = EnsureTable(ws, "ApprovedTbl")
 End Sub
 
 Private Function JoinColumnValues(ByVal lo As ListObject, ByVal headerName As String, ByVal delim As String) As String
-    Dim idx As Long
+    Dim idx As Long: idx = GetColumnIndex(lo, headerName)
     Dim arr As Variant
     Dim i As Long
-    Dim s As String
-    Dim valStr As String
+    Dim s As String, valStr As String
 
-    idx = GetColumnIndex(lo, headerName)
     If idx = 0 Then Err.Raise 1003, , "Column '" & headerName & "' not found."
-
-    If lo.DataBodyRange Is Nothing Then
-        JoinColumnValues = ""
-        Exit Function
-    End If
+    If lo.DataBodyRange Is Nothing Then JoinColumnValues = "": Exit Function
 
     arr = lo.DataBodyRange.Columns(idx).Value
     For i = 1 To UBound(arr, 1)
@@ -241,85 +294,17 @@ Private Function JoinColumnValues(ByVal lo As ListObject, ByVal headerName As St
     JoinColumnValues = s
 End Function
 
-Private Sub CopyToClipboard(ByVal textVal As String)
-    Dim prevScr As Boolean
-    Dim wsTmp As Worksheet
-    Dim o As Object
-
-    On Error Resume Next
-    Set o = CreateObject("MSForms.DataObject")
-    If Err.Number = 0 Then
-        o.SetText textVal
-        o.PutInClipboard
-        Exit Sub
-    End If
-    On Error GoTo 0
-
-    ' Fallback using hidden sheet (safe add/delete)
-    prevScr = Application.ScreenUpdating
-    Application.ScreenUpdating = False
-    Set wsTmp = ThisWorkbook.Worksheets.Add
-    wsTmp.Visible = xlSheetVeryHidden
-    wsTmp.Range("A1").Value = textVal
-    wsTmp.Range("A1").Copy
-    Application.CutCopyMode = False
-
-    SafeDeleteSheet wsTmp ' <<< SAFE DELETE
-
-    Application.ScreenUpdating = prevScr
-End Sub
-
-Private Function CreateDatedSheet(ByVal wb As Workbook) As Worksheet
-    Dim baseName As String
-    Dim nameCandidate As String
-    Dim n As Long
-
-    baseName = Format(Date, "yyyy-mm-dd")
-    nameCandidate = baseName
-    n = 1
-
-    Do While SheetExists(wb, nameCandidate)
-        n = n + 1
-        nameCandidate = baseName & " (" & n & ")"
-    Loop
-
-    Set CreateDatedSheet = wb.Worksheets.Add(After:=wb.Sheets(wb.Sheets.Count))
-    CreateDatedSheet.Name = nameCandidate
-End Function
-
-Private Function EnsureSheet(ByVal wb As Workbook, ByVal name As String, Optional ByVal recreate As Boolean = False) As Worksheet
-    If recreate And SheetExists(wb, name) Then
-        SafeDeleteSheet wb.Worksheets(name) ' <<< SAFE DELETE
-    End If
-
-    If SheetExists(wb, name) Then
-        Set EnsureSheet = wb.Worksheets(name)
-    Else
-        Set EnsureSheet = wb.Worksheets.Add(After:=wb.Sheets(wb.Sheets.Count))
-        EnsureSheet.Name = name
-    End If
-End Function
-
-Private Function SheetExists(ByVal wb As Workbook, ByVal name As String) As Boolean
-    On Error Resume Next
-    SheetExists = Not wb.Worksheets(name) Is Nothing
-    On Error GoTo 0
-End Function
-
+'========================
+' Copy columns + matching
+'========================
 Private Sub CopyColumnsByName(ByVal lo As ListObject, ByVal wsDest As Worksheet, ByVal fieldNames As Variant)
-    Dim i As Long
-    Dim idx As Long
-    Dim nextCol As Long
-    nextCol = 1
-
+    Dim i As Long, idx As Long, nextCol As Long
     wsDest.Cells.Clear
-
-    ' headers
+    nextCol = 1
     For i = LBound(fieldNames) To UBound(fieldNames)
         idx = GetColumnIndex(lo, CStr(fieldNames(i)))
         If idx = 0 Then Err.Raise 1004, , "Column '" & CStr(fieldNames(i)) & "' not found in Credit Studio."
         wsDest.Cells(1, nextCol).Value = CStr(fieldNames(i))
-
         If Not lo.DataBodyRange Is Nothing Then
             lo.DataBodyRange.Columns(idx).Copy wsDest.Cells(2, nextCol)
         End If
@@ -327,20 +312,9 @@ Private Sub CopyColumnsByName(ByVal lo As ListObject, ByVal wsDest As Worksheet,
     Next i
 End Sub
 
-Private Function GetColumnIndex(ByVal lo As ListObject, ByVal headerName As String) As Long
-    Dim i As Long
-    For i = 1 To lo.HeaderRowRange.Columns.Count
-        If Trim$(LCase$(CStr(lo.HeaderRowRange.Cells(1, i).Value))) = Trim$(LCase$(headerName)) Then
-            GetColumnIndex = i
-            Exit Function
-        End If
-    Next i
-    GetColumnIndex = 0
-End Function
-
 Private Function BuildCoperToCoRMap(ByVal lo As ListObject, ByVal coperCol As String, ByVal corCol As String) As Object
     Dim idxC As Long, idxR As Long
-    Dim dict As Object
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
     Dim r As Long
     Dim vCoper As String, vCoR As String
 
@@ -349,14 +323,11 @@ Private Function BuildCoperToCoRMap(ByVal lo As ListObject, ByVal coperCol As St
     If idxC = 0 Then Err.Raise 1005, , "Column '" & coperCol & "' not found in Approved."
     If idxR = 0 Then Err.Raise 1006, , "Column '" & corCol & "' not found in Approved."
 
-    Set dict = CreateObject("Scripting.Dictionary")
     If Not lo.DataBodyRange Is Nothing Then
         For r = 1 To lo.DataBodyRange.Rows.Count
             vCoper = Trim$(CStr(lo.DataBodyRange.Cells(r, idxC).Value))
             vCoR = Trim$(CStr(lo.DataBodyRange.Cells(r, idxR).Value))
-            If Len(vCoper) > 0 Then
-                dict(vCoper) = vCoR
-            End If
+            If Len(vCoper) > 0 Then dict(vCoper) = vCoR
         Next r
     End If
     Set BuildCoperToCoRMap = dict
@@ -364,10 +335,8 @@ End Function
 
 Private Sub AppendApprovedCoR(ByVal ws As Worksheet, ByVal approvedMap As Object, _
                               ByVal coperColName As String, ByVal outColName As String)
-    Dim lastRow As Long, lastCol As Long
-    Dim coperCol As Long
-    Dim r As Long
-    Dim key As String
+    Dim lastRow As Long, lastCol As Long, coperCol As Long
+    Dim r As Long, key As String
 
     lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
     If lastRow < 1 Then Exit Sub
@@ -393,8 +362,7 @@ Private Sub AppendApprovedCoR(ByVal ws As Worksheet, ByVal approvedMap As Object
 End Sub
 
 Private Function FindHeader(ByVal ws As Worksheet, ByVal headerName As String) As Long
-    Dim lastCol As Long
-    Dim c As Long
+    Dim lastCol As Long, c As Long
     lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
     For c = 1 To lastCol
         If Trim$(LCase$(CStr(ws.Cells(1, c).Value))) = Trim$(LCase$(headerName)) Then
@@ -412,7 +380,7 @@ Private Sub CreateMismatchSummary(ByVal wb As Workbook, ByVal loRecali As ListOb
                                   ByVal summarySheetName As String)
 
     Dim idxCredit As Long, idxApproved As Long, idxCoper As Long
-    Dim dict As Object
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
     Dim r As Long
     Dim valCredit As String, valApproved As String, coper As String
     Dim wsSum As Worksheet
@@ -424,12 +392,7 @@ Private Sub CreateMismatchSummary(ByVal wb As Workbook, ByVal loRecali As ListOb
     idxCredit = GetColumnIndex(loRecali, creditCoRColName)
     idxApproved = GetColumnIndex(loRecali, approvedCoRColName)
     idxCoper = GetColumnIndex(loRecali, coperColName)
-
-    If idxCredit * idxApproved * idxCoper = 0 Then
-        Err.Raise 1008, , "One or more required columns missing in CoR Recali."
-    End If
-
-    Set dict = CreateObject("Scripting.Dictionary")
+    If idxCredit * idxApproved * idxCoper = 0 Then Err.Raise 1008, , "Required columns missing in CoR Recali."
 
     If Not loRecali.DataBodyRange Is Nothing Then
         For r = 1 To loRecali.DataBodyRange.Rows.Count
@@ -446,11 +409,9 @@ Private Sub CreateMismatchSummary(ByVal wb As Workbook, ByVal loRecali As ListOb
         Next r
     End If
 
-    ' If no mismatches, remove any old summary and exit
+    ' No mismatches → remove old sheet if present and exit
     If dict.Count = 0 Then
-        If SheetExists(wb, summarySheetName) Then
-            SafeDeleteSheet wb.Worksheets(summarySheetName) ' <<< SAFE DELETE
-        End If
+        If SheetExists(wb, summarySheetName) Then SafeDeleteSheet wb.Worksheets(summarySheetName)
         Exit Sub
     End If
 
@@ -470,17 +431,14 @@ Private Sub CreateMismatchSummary(ByVal wb As Workbook, ByVal loRecali As ListOb
     On Error Resume Next
     lo.Name = "CoRMismatchSummaryTbl"
     On Error GoTo 0
-
     wsSum.Columns.AutoFit
 End Sub
 
 Private Function JoinUniqueFromCollection(ByVal col As Collection, ByVal delim As String) As String
-    Dim seen As Object
+    Dim seen As Object: Set seen = CreateObject("Scripting.Dictionary")
     Dim i As Long
     Dim valStr As String
     Dim s As String
-
-    Set seen = CreateObject("Scripting.Dictionary")
     For i = 1 To col.Count
         valStr = Trim$(CStr(col(i)))
         If Len(valStr) > 0 Then
@@ -494,10 +452,49 @@ Private Function JoinUniqueFromCollection(ByVal col As Collection, ByVal delim A
     JoinUniqueFromCollection = s
 End Function
 
-' =======================
-' Safe utilities (fix 1004 delete failures)
-' =======================
+'========================
+' Clipboard (robust)
+'========================
+Private Sub CopyToClipboard(ByVal textVal As String)
+    ' Try MSForms first (if available), then API fallback.
+    On Error Resume Next
+    Dim o As Object
+    Set o = CreateObject("MSForms.DataObject")
+    If Err.Number = 0 Then
+        o.SetText textVal
+        o.PutInClipboard
+        Exit Sub
+    End If
+    On Error GoTo 0
+    ClipboardSetTextAPI textVal
+End Sub
 
+Private Sub ClipboardSetTextAPI(ByVal textVal As String)
+    Dim bytesNeeded As LongPtr
+    Dim hGlobal As LongPtr
+    Dim pGlobal As LongPtr
+    Dim ok As Long
+
+    bytesNeeded = (Len(textVal) * 2) + 2 ' UTF-16 chars + null
+    hGlobal = GlobalAlloc(GMEM_MOVEABLE, bytesNeeded)
+    If hGlobal = 0 Then Err.Raise vbObjectError + 600, , "Clipboard alloc failed."
+
+    pGlobal = GlobalLock(hGlobal)
+    If pGlobal = 0 Then Err.Raise vbObjectError + 601, , "Clipboard lock failed."
+
+    ok = lstrcpyW(pGlobal, StrPtr(textVal))
+    GlobalUnlock hGlobal
+
+    ok = OpenClipboard(0)
+    If ok = 0 Then Err.Raise vbObjectError + 602, , "OpenClipboard failed."
+    EmptyClipboard
+    SetClipboardData CF_UNICODETEXT, hGlobal ' System owns memory after this
+    CloseClipboard
+End Sub
+
+'========================
+' Safe sheet ops
+'========================
 Private Function IsStructureProtected(ByVal wb As Workbook) As Boolean
     On Error Resume Next
     IsStructureProtected = wb.ProtectStructure
@@ -505,19 +502,14 @@ Private Function IsStructureProtected(ByVal wb As Workbook) As Boolean
 End Function
 
 Private Sub SafeDeleteSheet(ByVal ws As Worksheet)
-    Dim wb As Workbook
-    Set wb = ws.Parent
-
-    ' If structure is protected or only one sheet remains, do NOT delete
+    Dim wb As Workbook: Set wb = ws.Parent
     If IsStructureProtected(wb) Then Exit Sub
     If wb.Worksheets.Count <= 1 Then Exit Sub
 
-    ' Make sure sheet is visible before delete (Excel can be fussy)
     On Error Resume Next
     ws.Visible = xlSheetVisible
     On Error GoTo 0
 
-    ' Delete with alerts suppressed
     Dim prevAlerts As Boolean
     prevAlerts = Application.DisplayAlerts
     Application.DisplayAlerts = False
