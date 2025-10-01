@@ -1,7 +1,7 @@
 Option Explicit
 
 '========================
-' Clipboard API (bitness-safe)
+' Clipboard API (bitness-safe, fallback)
 '========================
 #If VBA7 Then
     Private Declare PtrSafe Function OpenClipboard Lib "user32" (ByVal hwnd As LongPtr) As Long
@@ -43,67 +43,47 @@ Public Sub Run_ApprovedFunds_CreditStudio_Workflow()
     Dim approvedPath As String, creditPath As String
     Dim wbApproved As Workbook, wbCredit As Workbook
     Dim loApproved As ListObject, loCredit As ListObject
-    Dim joinedCoper As String
-    Dim resp As VbMsgBoxResult
     Dim approvedMap As Object
     Dim loRecali As ListObject
 
-    ' 1) Approved funds CSV
+    ' 1) Pick Approved Funds CSV
     approvedPath = PickFile("Select APPROVED FUNDS CSV", "CSV Files (*.csv)", "*.csv")
     If Len(approvedPath) = 0 Then MsgBox "Operation cancelled.", vbInformation: Exit Sub
 
-    ' 2) Open CSV, delete first row (row 2 has headers)
+    ' 2) Open & delete first row
     Set wbApproved = Workbooks.Open(Filename:=approvedPath, Local:=True)
     With wbApproved.Worksheets(1)
         .Rows(1).Delete
     End With
 
-    ' 3) Convert to table with headers
+    ' 3) Table-ize
     Set loApproved = EnsureTable(wbApproved.Worksheets(1), "ApprovedTbl")
 
-    ' 4) Keep only specific Business Units
+    ' 4) Keep only target Business Units
     FilterKeepOnlyBusinessUnits loApproved, Array("FI-GMC-ASIA", "FI-US", "FI-EMEA")
-    ' loApproved refreshed inside that procedure
+    ' loApproved refreshed inside
 
-    ' 5) Prepare Fund CoPER list, copy to clipboard; allow copy-again loop
-    joinedCoper = JoinColumnValues(loApproved, "Fund CoPER", ",")
-    If Len(joinedCoper) = 0 Then
-        MsgBox "No 'Fund CoPER' values after filtering. Cannot proceed.", vbCritical
-        GoTo Cleanup
-    End If
-    CopyToClipboard joinedCoper
+    ' 5) Copy Fund CoPER in batches of 600 (user pastes each batch in Credit Studio)
+    CopyCoperBatches loApproved, "Fund CoPER", 600
 
-    Do
-        resp = MsgBox( _
-            "Fund CoPER values have been copied for Credit Studio." & vbCrLf & vbCrLf & _
-            "• Click YES to copy again." & vbCrLf & _
-            "• Click NO to MOVE ON.", _
-            vbYesNo + vbInformation, "Copied for Credit Studio")
-        If resp = vbYes Then
-            CopyToClipboard joinedCoper
-        Else
-            Exit Do
-        End If
-    Loop
-
-    ' 5b) Credit Studio xlsx
+    ' 5b) Pick Credit Studio XLSX
     creditPath = PickFile("Select CREDIT STUDIO XLSX", "Excel Files (*.xlsx)", "*.xlsx")
     If Len(creditPath) = 0 Then MsgBox "Operation cancelled.", vbInformation: GoTo Cleanup
     Set wbCredit = Workbooks.Open(Filename:=creditPath, ReadOnly:=True)
 
-    ' 6) Create new sheet named today's date in MAIN workbook
+    ' 6) Create dated sheet in MAIN
     Set wsDate = CreateDatedSheet(wbMain)
 
-    ' 7) Credit Studio → table; copy columns to "CoR Recali"
+    ' 7) Credit Studio → table; copy "Coper ID" & "Country of Risk" to "CoR Recali"
     Set loCredit = EnsureTable(wbCredit.Worksheets(1), "CreditTbl")
-    Set wsRecali = EnsureSheet(wbMain, "CoR Recali", True) ' recreate
+    Set wsRecali = EnsureSheet(wbMain, "CoR Recali", True)
     CopyColumnsByName loCredit, wsRecali, Array("Coper ID", "Country of Risk")
 
-    ' 8) Map Approved (Fund CoPER -> Country of Risk) and append Approved CoR in Recali
+    ' 8) Build Approved map and append Approved CoR
     Set approvedMap = BuildCoperToCoRMap(loApproved, "Fund CoPER", "Country of Risk")
     AppendApprovedCoR wsRecali, approvedMap, "Coper ID", "Approved CoR"
 
-    ' 9) Table-ize Recali; mismatch summary (unique CoR, joined Copers)
+    ' 9) Table-ize & mismatch summary
     Set loRecali = EnsureTable(wsRecali, "CoRRecaliTbl")
     CreateMismatchSummary wbMain, loRecali, _
         creditCoRColName:="Country of Risk", _
@@ -122,6 +102,96 @@ Cleanup:
     If Not wbCredit Is Nothing Then wbCredit.Close SaveChanges:=False
     If Not wbApproved Is Nothing Then wbApproved.Close SaveChanges:=True
 End Sub
+
+'========================
+' Batching: copy Fund CoPER in chunks
+'========================
+Private Sub CopyCoperBatches(ByVal lo As ListObject, ByVal headerName As String, ByVal batchSize As Long)
+    Dim vals() As String
+    vals = GetColumnValues(lo, headerName)
+    If Not IsArrayAllocated(vals) Then
+        MsgBox "No '" & headerName & "' values found.", vbCritical
+        Exit Sub
+    End If
+
+    Dim total As Long: total = UBound(vals) - LBound(vals) + 1
+    If total = 0 Then
+        MsgBox "No '" & headerName & "' values found.", vbCritical
+        Exit Sub
+    End If
+
+    Dim totalBatches As Long
+    totalBatches = (total \ batchSize) + IIf(total Mod batchSize = 0, 0, 1)
+
+    Dim b As Long, startIdx As Long, endIdx As Long, sizeThis As Long
+    For b = 1 To totalBatches
+        startIdx = (b - 1) * batchSize + 1
+        endIdx = WorksheetFunction.Min(b * batchSize, total)
+        sizeThis = endIdx - startIdx + 1
+
+        Dim payload As String
+        payload = JoinRange(vals, startIdx, endIdx, ",")
+
+        CopyToClipboard payload
+
+        If b < totalBatches Then
+            If MsgBox( _
+                "Batch " & b & " of " & totalBatches & " copied (" & sizeThis & " IDs)." & vbCrLf & _
+                "Paste into Credit Studio (or wherever needed), then click OK for the next batch." & vbCrLf & _
+                "Click Cancel to abort.", _
+                vbOKCancel + vbInformation, "Copy CoPER Batches") = vbCancel Then
+                Err.Clear
+                Exit Sub
+            End If
+        Else
+            MsgBox "Final batch " & b & " of " & totalBatches & " copied (" & sizeThis & " IDs). Paste it now. Moving on next.", vbInformation, "Copy CoPER Batches"
+        End If
+    Next b
+End Sub
+
+Private Function GetColumnValues(ByVal lo As ListObject, ByVal headerName As String) As String()
+    Dim idx As Long: idx = GetColumnIndex(lo, headerName)
+    Dim out() As String
+    Dim r As Long, n As Long
+
+    If idx = 0 Or lo.DataBodyRange Is Nothing Then
+        ' return unallocated
+        Exit Function
+    End If
+
+    ReDim out(1 To lo.DataBodyRange.Rows.Count)
+    n = 0
+    For r = 1 To lo.DataBodyRange.Rows.Count
+        Dim v As String
+        v = Trim$(CStr(lo.DataBodyRange.Cells(r, idx).Value))
+        If Len(v) > 0 Then
+            n = n + 1
+            out(n) = v
+        End If
+    Next r
+
+    If n = 0 Then
+        Erase out
+    ElseIf n < UBound(out) Then
+        ReDim Preserve out(1 To n)
+    End If
+    GetColumnValues = out
+End Function
+
+Private Function JoinRange(ByRef arr() As String, ByVal startIdx As Long, ByVal endIdx As Long, ByVal delim As String) As String
+    Dim i As Long, s As String
+    For i = startIdx To endIdx
+        If Len(s) > 0 Then s = s & delim
+        s = s & arr(i)
+    Next i
+    JoinRange = s
+End Function
+
+Private Function IsArrayAllocated(ByRef arr() As String) As Boolean
+    On Error Resume Next
+    IsArrayAllocated = (Not arr Is Nothing) And (LBound(arr) <= UBound(arr))
+    On Error GoTo 0
+End Function
 
 '========================
 ' File pickers / sheets
@@ -144,11 +214,9 @@ Private Function PickFile(ByVal promptTitle As String, ByVal filterDesc As Strin
 End Function
 
 Private Function CreateDatedSheet(ByVal wb As Workbook) As Worksheet
-    Dim baseName As String, nameCandidate As String
-    Dim n As Long
+    Dim baseName As String, nameCandidate As String, n As Long
     baseName = Format(Date, "yyyy-mm-dd")
-    nameCandidate = baseName
-    n = 1
+    nameCandidate = baseName: n = 1
     Do While SheetExists(wb, nameCandidate)
         n = n + 1
         nameCandidate = baseName & " (" & n & ")"
@@ -274,26 +342,6 @@ Private Sub FilterKeepOnlyBusinessUnits(ByRef lo As ListObject, ByVal keepArr As
     Set lo = EnsureTable(ws, "ApprovedTbl")
 End Sub
 
-Private Function JoinColumnValues(ByVal lo As ListObject, ByVal headerName As String, ByVal delim As String) As String
-    Dim idx As Long: idx = GetColumnIndex(lo, headerName)
-    Dim arr As Variant
-    Dim i As Long
-    Dim s As String, valStr As String
-
-    If idx = 0 Then Err.Raise 1003, , "Column '" & headerName & "' not found."
-    If lo.DataBodyRange Is Nothing Then JoinColumnValues = "": Exit Function
-
-    arr = lo.DataBodyRange.Columns(idx).Value
-    For i = 1 To UBound(arr, 1)
-        valStr = Trim$(CStr(arr(i, 1)))
-        If Len(valStr) > 0 Then
-            If Len(s) > 0 Then s = s & delim
-            s = s & valStr
-        End If
-    Next i
-    JoinColumnValues = s
-End Function
-
 '========================
 ' Copy columns + matching
 '========================
@@ -399,7 +447,6 @@ Private Sub CreateMismatchSummary(ByVal wb As Workbook, ByVal loRecali As ListOb
             valCredit = Trim$(CStr(loRecali.DataBodyRange.Cells(r, idxCredit).Value))
             valApproved = Trim$(CStr(loRecali.DataBodyRange.Cells(r, idxApproved).Value))
             coper = Trim$(CStr(loRecali.DataBodyRange.Cells(r, idxCoper).Value))
-
             If Len(valCredit) > 0 And Len(coper) > 0 Then
                 If StrComp(valCredit, valApproved, vbTextCompare) <> 0 Then
                     If Not dict.Exists(valCredit) Then dict.Add valCredit, New Collection
@@ -409,7 +456,6 @@ Private Sub CreateMismatchSummary(ByVal wb As Workbook, ByVal loRecali As ListOb
         Next r
     End If
 
-    ' No mismatches → remove old sheet if present and exit
     If dict.Count = 0 Then
         If SheetExists(wb, summarySheetName) Then SafeDeleteSheet wb.Worksheets(summarySheetName)
         Exit Sub
@@ -470,7 +516,6 @@ Private Sub CopyToClipboard(ByVal textVal As String)
 End Sub
 
 Private Sub ClipboardSetTextAPI(ByVal textVal As String)
-    ' Bitness-safe locals
     #If VBA7 Then
         Dim bytesNeeded As LongPtr
         Dim hGlobal As LongPtr
@@ -485,21 +530,22 @@ Private Sub ClipboardSetTextAPI(ByVal textVal As String)
         Dim ok As Long
     #End If
 
-    bytesNeeded = (Len(textVal) * 2) + 2 ' UTF-16 chars + null
+    bytesNeeded = (Len(textVal) * 2) + 2 ' UTF-16 + null
     hGlobal = GlobalAlloc(GMEM_MOVEABLE, bytesNeeded)
     If hGlobal = 0 Then Err.Raise vbObjectError + 600, , "Clipboard alloc failed."
 
     pGlobal = GlobalLock(hGlobal)
     If pGlobal = 0 Then Err.Raise vbObjectError + 601, , "Clipboard lock failed."
 
-    copyRes = lstrcpyW(pGlobal, StrPtr(textVal)) ' <-- correct types
-    GlobalUnlock hGlobal                           ' <-- fixed typo
+    copyRes = lstrcpyW(pGlobal, StrPtr(textVal))
+    GlobalUnlock hGlobal
 
     ok = OpenClipboard(0)
     If ok = 0 Then Err.Raise vbObjectError + 602, , "OpenClipboard failed."
     EmptyClipboard
-    SetClipboardData CF_UNICODETEXT, hGlobal ' System owns memory after this
+    SetClipboardData CF_UNICODETEXT, hGlobal
     CloseClipboard
+    ' Do not free hGlobal after SetClipboardData; ownership transferred to system.
 End Sub
 
 '========================
