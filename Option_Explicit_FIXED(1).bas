@@ -1294,21 +1294,28 @@ End Sub
 
 
 ' ====== Added minimal helper to resolve missing reference (keeps existing flow intact) ======
-Public Function RegionFromBU(ByVal bu As String) As String
-    'Maps Business Unit text to a region token expected elsewhere: "AMRS", "EMEA", "APAC".
-    'Case-insensitive, tolerant of partial names. Returns "" if unmapped (caller already handles Else).
+' Map Business Unit to Region (normalizes spacing/hyphens/case)
+Private Function RegionFromBU(ByVal bu As String) As String
     Dim s As String
-    s = UCase$(Trim$(CStr(bu)))
-    If s Like "*AMR*" Or s Like "*AMERICA*" Then
-        RegionFromBU = "AMRS"
-    ElseIf s Like "*EMEA*" Or s Like "*EURO*" Or s Like "*MIDDLE EAST*" Or s Like "*AFRICA*" Then
-        RegionFromBU = "EMEA"
-    ElseIf s Like "*APAC*" Or s Like "*ASIA*" Or s Like "*PACIFIC*" Or s Like "*JAPAN*" Or s Like "*ANZ*" Then
-        RegionFromBU = "APAC"
-    Else
-        RegionFromBU = ""
-    End If
+    s = UCase$(Trim$(bu))
+    s = Replace(s, "  ", " ")
+    s = Replace(s, "- ", "-")    ' normalize "GMC- Asia" -> "GMC-Asia"
+    s = Replace(s, " -", "-")
+    s = Replace(s, "  ", " ")
+
+    Select Case s
+        Case "FI-US"
+            RegionFromBU = "AMRS"
+        Case "FI-EMEA"
+            RegionFromBU = "EMEA"
+        Case "FI-GMC-ASIA", "FI-GMC- ASIA", "FI-GMC-ASIA ", "FI-GMC- ASIA "
+            RegionFromBU = "APAC"
+        Case Else
+            RegionFromBU = ""     ' unmapped/unknown
+    End Select
 End Function
+
+
 ' Returns Long value from a dictionary by key; 0 (or defaultVal) if missing/non-numeric/null.
 Public Function NzLng3(ByVal dict As Object, ByVal key As String, Optional ByVal defaultVal As Long = 0) As Long
     On Error GoTo SafeExit
