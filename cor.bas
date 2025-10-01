@@ -882,3 +882,21 @@ Private Sub ClipboardSetTextAPI(ByVal textVal As String)
     SetClipboardData CF_UNICODETEXT, hGlobal
     CloseClipboard
 End Sub
+
+' Find the column index (1-based) of a header on row 1; 0 if not found.
+Private Function FindHeader(ByVal ws As Worksheet, ByVal headerName As String) As Long
+    Dim lastCol As Long, c As Long, target As String, val As String
+    If ws Is Nothing Then Exit Function
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Function
+
+    target = LCase$(Trim$(headerName))
+    For c = 1 To lastCol
+        val = LCase$(Trim$(CStr(ws.Cells(1, c).Value)))
+        If val = target Then
+            FindHeader = c
+            Exit Function
+        End If
+    Next c
+    FindHeader = 0
+End Function
