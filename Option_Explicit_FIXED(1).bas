@@ -705,10 +705,15 @@ End Function
 
 Private Function ProperStatus(ByVal s As String) As String
     s = Trim$(s)
-    If UCase$(s) = "APPROVED" Then ProperStatus = "Approved" _
-    ElseIf UCase$(s) = "SUBMITTED" Then ProperStatus = "Submitted" _
-    Else ProperStatus = s
+    If UCase$(s) = "APPROVED" Then
+        ProperStatus = "Approved"
+    ElseIf UCase$(s) = "SUBMITTED" Then
+        ProperStatus = "Submitted"
+    Else
+        ProperStatus = s
+    End If
 End Function
+
 
 '========================
 ' Save Pending (AllFund copers NOT in Credit Studio)
