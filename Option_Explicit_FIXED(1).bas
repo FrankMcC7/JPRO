@@ -1421,3 +1421,14 @@ SafeExit:
     NzLng3 = defaultVal
 End Function
 
+' Normalize Review Status to consistent casing used across the stats
+Private Function ProperStatus(ByVal s As Variant) As String
+    Dim t As String
+    t = UCase$(Trim$(CStr(s)))
+    Select Case t
+        Case "APPROVED":  ProperStatus = "Approved"
+        Case "SUBMITTED": ProperStatus = "Submitted"
+        Case Else:        ProperStatus = Trim$(CStr(s))   ' pass through as-is
+    End Select
+End Function
+
