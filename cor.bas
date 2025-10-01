@@ -1265,3 +1265,99 @@ Private Sub EnsureRecaliHeaders(ByVal ws As Worksheet)
         ws.Cells(1, 3).Value = "Source File"
     End If
 End Sub
+
+' Find the next write row on a sheet (after last used row in column A)
+Private Function NextWriteRow(ByVal ws As Worksheet) As Long
+    Dim r As Long
+    r = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If r < 1 Then
+        NextWriteRow = 1
+    Else
+        NextWriteRow = r + 1
+    End If
+End Function
+
+' Append two columns by header name from a ListObject to a destination sheet, tagging the source file
+Private Sub AppendColumnsByName(ByVal lo As ListObject, _
+                                ByVal wsDest As Worksheet, _
+                                ByVal field1 As String, _
+                                ByVal field2 As String, _
+                                ByVal sourceTag As String)
+    Dim idx1 As Long, idx2 As Long, r As Long, outRow As Long, v1 As String, v2 As String
+
+    idx1 = GetColumnIndex(lo, field1)
+    idx2 = GetColumnIndex(lo, field2)
+    If idx1 = 0 Then Err.Raise 2001, , "Column '" & field1 & "' not found."
+    If idx2 = 0 Then Err.Raise 2002, , "Column '" & field2 & "' not found."
+    If lo.DataBodyRange Is Nothing Then Exit Sub
+
+    EnsureRecaliHeaders wsDest
+    outRow = NextWriteRow(wsDest)
+
+    For r = 1 To lo.DataBodyRange.Rows.Count
+        v1 = Trim$(CStr(lo.DataBodyRange.Cells(r, idx1).Value)) ' Coper ID
+        v2 = Trim$(CStr(lo.DataBodyRange.Cells(r, idx2).Value)) ' Country of Risk
+
+        ' Write as text
+        wsDest.Cells(outRow, 1).NumberFormat = "@"
+        wsDest.Cells(outRow, 2).NumberFormat = "@"
+        wsDest.Cells(outRow, 3).NumberFormat = "@"
+
+        ' Sanitize Coper ID (remove commas/spaces)
+        If Len(v1) > 0 Then v1 = Replace(Replace(Replace(v1, ",", ""), " ", ""), Chr$(160), "")
+
+        wsDest.Cells(outRow, 1).Value = v1
+        wsDest.Cells(outRow, 2).Value = v2
+        wsDest.Cells(outRow, 3).Value = sourceTag
+
+        outRow = outRow + 1
+    Next r
+End Sub
+' Find the next write row on a sheet (after last used row in column A)
+Private Function NextWriteRow(ByVal ws As Worksheet) As Long
+    Dim r As Long
+    r = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If r < 1 Then
+        NextWriteRow = 1
+    Else
+        NextWriteRow = r + 1
+    End If
+End Function
+
+' Append two columns by header name from a ListObject to a destination sheet, tagging the source file
+Private Sub AppendColumnsByName(ByVal lo As ListObject, _
+                                ByVal wsDest As Worksheet, _
+                                ByVal field1 As String, _
+                                ByVal field2 As String, _
+                                ByVal sourceTag As String)
+    Dim idx1 As Long, idx2 As Long, r As Long, outRow As Long, v1 As String, v2 As String
+
+    idx1 = GetColumnIndex(lo, field1)
+    idx2 = GetColumnIndex(lo, field2)
+    If idx1 = 0 Then Err.Raise 2001, , "Column '" & field1 & "' not found."
+    If idx2 = 0 Then Err.Raise 2002, , "Column '" & field2 & "' not found."
+    If lo.DataBodyRange Is Nothing Then Exit Sub
+
+    EnsureRecaliHeaders wsDest
+    outRow = NextWriteRow(wsDest)
+
+    For r = 1 To lo.DataBodyRange.Rows.Count
+        v1 = Trim$(CStr(lo.DataBodyRange.Cells(r, idx1).Value)) ' Coper ID
+        v2 = Trim$(CStr(lo.DataBodyRange.Cells(r, idx2).Value)) ' Country of Risk
+
+        ' Write as text
+        wsDest.Cells(outRow, 1).NumberFormat = "@"
+        wsDest.Cells(outRow, 2).NumberFormat = "@"
+        wsDest.Cells(outRow, 3).NumberFormat = "@"
+
+        ' Sanitize Coper ID (remove commas/spaces)
+        If Len(v1) > 0 Then v1 = Replace(Replace(Replace(v1, ",", ""), " ", ""), Chr$(160), "")
+
+        wsDest.Cells(outRow, 1).Value = v1
+        wsDest.Cells(outRow, 2).Value = v2
+        wsDest.Cells(outRow, 3).Value = sourceTag
+
+        outRow = outRow + 1
+    Next r
+End Sub
+
