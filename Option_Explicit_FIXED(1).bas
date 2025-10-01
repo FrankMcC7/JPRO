@@ -1309,4 +1309,26 @@ Public Function RegionFromBU(ByVal bu As String) As String
         RegionFromBU = ""
     End If
 End Function
+' Returns Long value from a dictionary by key; 0 (or defaultVal) if missing/non-numeric/null.
+Public Function NzLng3(ByVal dict As Object, ByVal key As String, Optional ByVal defaultVal As Long = 0) As Long
+    On Error GoTo SafeExit
+    If dict Is Nothing Then
+        NzLng3 = defaultVal
+        Exit Function
+    End If
+
+    If dict.Exists(key) Then
+        If IsNumeric(dict(key)) Then
+            NzLng3 = CLng(dict(key))
+        Else
+            NzLng3 = defaultVal
+        End If
+    Else
+        NzLng3 = defaultVal
+    End If
+    Exit Function
+
+SafeExit:
+    NzLng3 = defaultVal
+End Function
 
