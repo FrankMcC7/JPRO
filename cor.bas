@@ -1232,3 +1232,25 @@ Private Sub ClipboardSetTextAPI(ByVal textVal As String)
     SetClipboardData CF_UNICODETEXT, hGlobal
     CloseClipboard
 End Sub
+
+' Map Business Unit to Region (normalizes spacing/hyphens/case)
+Private Function RegionFromBU(ByVal bu As String) As String
+    Dim s As String
+    s = UCase$(Trim$(bu))
+    s = Replace(s, "  ", " ")
+    s = Replace(s, "- ", "-")    ' normalize "GMC- Asia" -> "GMC-Asia"
+    s = Replace(s, " -", "-")
+    s = Replace(s, "  ", " ")
+
+    Select Case s
+        Case "FI-US"
+            RegionFromBU = "AMRS"
+        Case "FI-EMEA"
+            RegionFromBU = "EMEA"
+        Case "FI-GMC-ASIA", "FI-GMC- ASIA", "FI-GMC-ASIA ", "FI-GMC- ASIA "
+            RegionFromBU = "APAC"
+        Case Else
+            RegionFromBU = ""     ' unmapped/unknown
+    End Select
+End Function
+
