@@ -252,3 +252,27 @@ Private Function SheetExists(ByVal wb As Workbook, ByVal name As String) As Bool
     SheetExists = Not wb.Worksheets(name) Is Nothing
     On Error GoTo 0
 End Function
+
+' Pick multiple files and return their paths in a Collection
+Private Function PickFilesMulti(ByVal promptTitle As String, _
+                                ByVal filterDesc As String, _
+                                ByVal filterPattern As String) As Collection
+    Dim fd As FileDialog, i As Long
+    Dim c As New Collection
+
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = promptTitle
+        .Filters.Clear
+        .Filters.Add filterDesc, filterPattern
+        .AllowMultiSelect = True
+        If .Show = -1 Then
+            For i = 1 To .SelectedItems.Count
+                c.Add .SelectedItems(i)
+            Next i
+        End If
+    End With
+
+    Set PickFilesMulti = c   ' may be empty; caller should check Count
+End Function
+
