@@ -1,32 +1,19 @@
-Private Sub cmdMoveOn_Click()
-    ' (Optional) existing clipboard / UI code...
-    ' Close or hide the form:
-    Unload Me
-    ' Kick off the continuation:
-    Run_PostQC_Continue_PQC
-End Sub
-
-
 Option Explicit
 
 ' =============================================================
-' POST-REMEDIATION QC (uses your frmCoperBatches without freezing Excel)
-' - Entry macro prepares batches and SHOWS the form, then exits.
-' - You paste/search/export in Credit Studio.
-' - When done, click "Move On" on the form, which calls Run_PostQC_Continue_PQC.
-' - Continuation asks for UPDATED Credit Studio file(s), applies Keys, compares, writes QC in Iteration:Stats.
+' POST-REMEDIATION QC (uses frmCoperBatches; no UI blocking; Keys normalization)
+' Entry:  Run_PostQC_Start_PQC   → prepares batches, shows form, exits.
+' Button: frmCoperBatches.Move On → calls Run_PostQC_Continue_PQC.
 ' =============================================================
 
-' ---- If these globals already exist elsewhere, DELETE these lines ----
+' ---- If these globals already exist elsewhere, DELETE these 4 lines to avoid duplicates ----
 Public G_Batches() As String
 Public G_BatchIndex As Long
 Public G_BatchCount As Long
 Public G_WorkflowReadyToContinue As Boolean
-' ---------------------------------------------------------------------
+' -------------------------------------------------------------------------------------------
 
-' ---------------------------
-' ENTRY: pick Iteration, read mismatch summary, build batches, show form, EXIT
-' ---------------------------
+' =============== ENTRY: pick Iteration, build targets, prep batches, show form, EXIT =======
 Public Sub Run_PostQC_Start_PQC()
     On Error GoTo Fail
 
@@ -40,13 +27,25 @@ Public Sub Run_PostQC_Start_PQC()
     If Len(iterPath) = 0 Then Exit Sub
 
     Set wbIter = Workbooks.Open(Filename:=iterPath, ReadOnly:=False)
-    If Not PQC_SheetExists(wbIter, "CoR Mismatch Summary") Then
-        MsgBox "'CoR Mismatch Summary' not found in the selected iteration file.", vbCritical
-        GoTo Cleanup
-    End If
-    Set wsSum = wbIter.Worksheets("CoR Mismatch Summary")
 
-    ' 2) Parse mismatch summary -> targetMap (coper -> Approved CoR), list for batching
+    ' 2) Locate CoR Mismatch Summary (tolerant name check)
+    If PQC_SheetExists(wbIter, "CoR Mismatch Summary") Then
+        Set wsSum = wbIter.Worksheets("CoR Mismatch Summary")
+    Else
+        Dim wsTry As Worksheet
+        For Each wsTry In wbIter.Worksheets
+            If LCase$(Trim$(wsTry.Name)) Like "cor mismatch summary*" Then
+                Set wsSum = wsTry
+                Exit For
+            End If
+        Next
+        If wsSum Is Nothing Then
+            MsgBox "'CoR Mismatch Summary' not found in the selected iteration file.", vbCritical
+            GoTo Cleanup
+        End If
+    End If
+
+    ' 3) Parse mismatch summary → targetMap (coper -> Approved CoR) + unique list for batching
     Set targetMap = CreateObject("Scripting.Dictionary")
     PQC_ParseMismatchSummaryToTargets wsSum, targetMap, targetList
     If targetMap.Count = 0 Then
@@ -54,19 +53,19 @@ Public Sub Run_PostQC_Start_PQC()
         GoTo Cleanup
     End If
 
-    ' 3) Save the iteration path & targets into Name objects so the continuation can reopen without asking
+    ' 4) Cache targets inside Iteration (hidden sheet; no string size limits)
     PQC_SaveTargetsForContinuation wbIter, targetMap
+
+    ' 5) Remember Iteration path in this main workbook
     PQC_SavePathName ThisWorkbook, "__PQC_ITERATION_PATH__", iterPath
 
-    ' 4) Prepare batches for your modeless form and show it; DO NOT BLOCK EXCEL
+    ' 6) Prepare batches for your modeless form; DO NOT block Excel
     PQC_FillBatchGlobals targetList, batchSize
     G_WorkflowReadyToContinue = False
     frmCoperBatches.Show vbModeless
 
     MsgBox "Batches prepared. Paste each batch into Credit Studio and export the updated data." & vbCrLf & _
            "When done exporting, click 'Move On' on the form to continue.", vbInformation
-
-    ' IMPORTANT: Exit here so the user can interact with Excel freely
     Exit Sub
 
 Cleanup:
@@ -80,9 +79,7 @@ Fail:
     Resume Cleanup
 End Sub
 
-' ---------------------------
-' CONTINUE: called by your form's "Move On" button (no AllFund dependency)
-' ---------------------------
+' =============== CONTINUATION: called by your form’s Move On button ========================
 Public Sub Run_PostQC_Continue_PQC()
     On Error GoTo Fail
 
@@ -90,7 +87,7 @@ Public Sub Run_PostQC_Continue_PQC()
     Dim wbIter As Workbook
     Dim targetMap As Object
 
-    ' 1) Reload Iteration and targets captured in Start
+    ' 1) Reload Iteration and targets
     iterPath = PQC_ReadPathName(ThisWorkbook, "__PQC_ITERATION_PATH__")
     If Len(iterPath) = 0 Then
         MsgBox "Iteration file path not found. Please run 'Run_PostQC_Start_PQC' first.", vbCritical
@@ -100,11 +97,11 @@ Public Sub Run_PostQC_Continue_PQC()
 
     Set targetMap = PQC_LoadTargetsForContinuation(wbIter)
     If targetMap Is Nothing Or targetMap.Count = 0 Then
-        MsgBox "Targets not found in the iteration file. Please run 'Run_PostQC_Start_PQC' again.", vbCritical
+        MsgBox "Targets not found in the Iteration file. Please run 'Run_PostQC_Start_PQC' again.", vbCritical
         GoTo Cleanup
     End If
 
-    ' 2) Ask for UPDATED Credit Studio files
+    ' 2) Pick UPDATED Credit Studio file(s)
     Dim creditFiles As Collection, p As Variant
     Dim wbCredit As Workbook, loCredit As ListObject
     Set creditFiles = PQC_PickFilesMulti("Select the UPDATED Credit Studio XLSX file(s) after rectification", "Excel Files (*.xlsx)", "*.xlsx")
@@ -122,11 +119,11 @@ Public Sub Run_PostQC_Continue_PQC()
         wbCredit.Close SaveChanges:=False
     Next p
 
-    ' 4) Load Keys map from MAIN (the workbook hosting this macro)
+    ' 4) Load Keys map from MAIN workbook (this macro host)
     Dim keysMap As Object
-    Set keysMap = PQC_LoadKeysMap(ThisWorkbook)      ' empty dict if not present
+    Set keysMap = PQC_LoadKeysMap(ThisWorkbook) ' empty dict if Keys sheet not present
 
-    ' 5) Compare with Keys normalization and write Post-Remediation QC section to Iteration:Stats
+    ' 5) Compare with Keys normalization; write Post-Remediation QC into Iteration:Stats
     PQC_WritePostRemediationStats wbIter, targetMap, creditUpdated, keysMap
 
     wbIter.Save
@@ -143,19 +140,14 @@ Fail:
     Resume Cleanup
 End Sub
 
-' =============================================================
-' PARSE mismatch summary into targets
-' =============================================================
+' =========================== TARGET BUILDING ===========================
 Private Sub PQC_ParseMismatchSummaryToTargets(ByVal ws As Worksheet, ByRef outMap As Object, ByRef outList() As String)
     Dim colCoR As Long, colCopers As Long
     colCoR = PQC_FindHeader(ws, "Country of Risk (AllFund, post-Keys normalization)")
     colCopers = PQC_FindHeader(ws, "Coper IDs with wrong CoR in Credit Studio (comma-joined)")
-
-    ' fallback if headers were edited
     If colCoR = 0 Then colCoR = PQC_FindHeader(ws, "Country of Risk")
     If colCopers = 0 Then colCopers = PQC_FindHeader(ws, "Coper IDs")
-
-    If colCoR = 0 Or colCopers = 0 Then Err.Raise vbObjectError + 7501, , "CoR Mismatch Summary: columns not found."
+    If colCoR = 0 Or colCopers = 0 Then Err.Raise vbObjectError + 8101, , "CoR Mismatch Summary: columns not found."
 
     Dim lastRow As Long: lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
     Dim r As Long, aCoR As String, listStr As String, arr() As String, i As Long
@@ -189,13 +181,10 @@ Private Sub PQC_ParseMismatchSummaryToTargets(ByVal ws As Worksheet, ByRef outMa
     End If
 End Sub
 
-' =============================================================
-' Batches for your form (no UI blocking)
-' =============================================================
+' ============================= BATCHING ================================
 Private Sub PQC_FillBatchGlobals(ByRef ids() As String, ByVal batchSize As Long)
     Dim total As Long, batches As Long, b As Long, sIdx As Long, eIdx As Long
-
-    If Not PQC_IsArrayAllocated(ids) Then Err.Raise vbObjectError + 7502, , "No coper IDs to batch."
+    If Not PQC_IsArrayAllocated(ids) Then Err.Raise vbObjectError + 8201, , "No coper IDs to batch."
 
     total = UBound(ids) - LBound(ids) + 1
     batches = (total \ batchSize) + IIf(total Mod batchSize = 0, 0, 1)
@@ -230,16 +219,14 @@ Private Function PQC_JoinRange(ByRef arr() As String, ByVal startIdx As Long, By
     PQC_JoinRange = s
 End Function
 
-' =============================================================
-' UPDATED CREDIT ingest
-' =============================================================
+' ============================= CREDIT INGEST ===========================
 Private Sub PQC_AppendCreditToDict(ByVal lo As ListObject, ByRef creditDict As Object, _
                                    ByVal coperHeader As String, ByVal corHeader As String)
     Dim idxC As Long, idxR As Long
     idxC = PQC_GetColumnIndex(lo, coperHeader)
     idxR = PQC_GetColumnIndex(lo, corHeader)
-    If idxC = 0 Then Err.Raise vbObjectError + 7701, , "Credit column '" & coperHeader & "' not found."
-    If idxR = 0 Then Err.Raise vbObjectError + 7702, , "Credit column '" & corHeader & "' not found."
+    If idxC = 0 Then Err.Raise vbObjectError + 8301, , "Credit column '" & coperHeader & "' not found."
+    If idxR = 0 Then Err.Raise vbObjectError + 8302, , "Credit column '" & corHeader & "' not found."
     If lo.DataBodyRange Is Nothing Then Exit Sub
 
     Dim r As Long, cid As String, cor As String
@@ -252,9 +239,7 @@ Private Sub PQC_AppendCreditToDict(ByVal lo As ListObject, ByRef creditDict As O
     Next r
 End Sub
 
-' =============================================================
-' KEYS: load + normalization
-' =============================================================
+' ============================= KEYS (normalization) ====================
 Private Function PQC_LoadKeysMap(ByVal wbMain As Workbook) As Object
     Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
     On Error GoTo Done
@@ -274,7 +259,7 @@ Private Function PQC_LoadKeysMap(ByVal wbMain As Workbook) As Object
             af = LCase$(Trim$(CStr(lo.DataBodyRange.Cells(r, idxAF).Value)))
             cs = LCase$(Trim$(CStr(lo.DataBodyRange.Cells(r, idxCS).Value)))
             If Len(af) > 0 And Len(cs) > 0 Then
-                canon = af                         ' AllFund spelling is canonical
+                canon = af
                 dict(af) = canon
                 dict(cs) = canon
             End If
@@ -293,9 +278,7 @@ Private Function PQC_NormalizeCoR(ByVal v As String, ByVal keysMap As Object) As
     PQC_NormalizeCoR = k
 End Function
 
-' =============================================================
-' WRITE Post-Remediation QC (uses Keys normalization)
-' =============================================================
+' ============================= STATS WRITER ============================
 Private Sub PQC_WritePostRemediationStats(ByVal iterWb As Workbook, _
                                           ByVal targetMap As Object, _
                                           ByVal creditUpdated As Object, _
@@ -369,43 +352,52 @@ Private Sub PQC_WritePostRemediationStats(ByVal iterWb As Workbook, _
     ws.Columns.AutoFit
 End Sub
 
-' =============================================================
-' PERSIST/RELOAD targets for continuation (stores a slim "cid=cor" list)
-' =============================================================
+' ===================== TARGET CACHE (hidden sheet in Iteration) ============================
 Private Sub PQC_SaveTargetsForContinuation(ByVal wbIter As Workbook, ByVal targetMap As Object)
-    Dim sb As String, k As Variant
-    For Each k In targetMap.Keys
-        If Len(sb) > 0 Then sb = sb & vbLf
-        sb = sb & CStr(k) & "=" & CStr(targetMap(k))
-    Next k
+    Dim ws As Worksheet, k As Variant, r As Long
     On Error Resume Next
-    wbIter.Names("__PQC_TARGETS__").Delete
+    Application.DisplayAlerts = False
+    wbIter.Worksheets("__PQC_CACHE__").Delete
+    Application.DisplayAlerts = True
     On Error GoTo 0
-    wbIter.Names.Add Name:="__PQC_TARGETS__", RefersTo:="=""" & sb & """"
+
+    Set ws = wbIter.Worksheets.Add(After:=wbIter.Sheets(wbIter.Sheets.Count))
+    ws.Name = "__PQC_CACHE__"
+    ws.Visible = xlSheetVeryHidden
+
+    ws.Cells(1, 1).Value = "CoperID"
+    ws.Cells(1, 2).Value = "ApprovedCoR"
+
+    r = 2
+    For Each k In targetMap.Keys
+        ws.Cells(r, 1).Value = CStr(k)
+        ws.Cells(r, 2).Value = CStr(targetMap(k))
+        r = r + 1
+    Next k
 End Sub
 
 Private Function PQC_LoadTargetsForContinuation(ByVal wbIter As Workbook) As Object
+    Dim ws As Worksheet, lastRow As Long, r As Long
     Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
-    Dim n As Name, s As String
-    On Error Resume Next
-    Set n = wbIter.Names("__PQC_TARGETS__")
-    On Error GoTo 0
-    If n Is Nothing Then Set PQC_LoadTargetsForContinuation = Nothing: Exit Function
 
-    s = n.RefersTo
-    s = Replace(s, "=", "")
-    s = Replace(s, """", "")
-    Dim lines() As String, i As Long, kv() As String
-    If Len(s) > 0 Then
-        lines = Split(s, vbLf)
-        For i = LBound(lines) To UBound(lines)
-            kv = Split(lines(i), "=")
-            If UBound(kv) = 1 Then d(Trim$(kv(0))) = Trim$(kv(1))
-        Next i
-    End If
+    On Error Resume Next
+    Set ws = wbIter.Worksheets("__PQC_CACHE__")
+    On Error GoTo 0
+    If ws Is Nothing Then Set PQC_LoadTargetsForContinuation = Nothing: Exit Function
+
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If lastRow < 2 Then Set PQC_LoadTargetsForContinuation = d: Exit Function
+
+    For r = 2 To lastRow
+        Dim cid As String, cor As String
+        cid = Trim$(CStr(ws.Cells(r, 1).Value))
+        cor = Trim$(CStr(ws.Cells(r, 2).Value))
+        If Len(cid) > 0 Then d(cid) = cor
+    Next r
     Set PQC_LoadTargetsForContinuation = d
 End Function
 
+' =========================== PATH PERSISTENCE (short string) ===============================
 Private Sub PQC_SavePathName(ByVal wb As Workbook, ByVal nm As String, ByVal path As String)
     On Error Resume Next
     wb.Names(nm).Delete
@@ -424,9 +416,7 @@ Private Function PQC_ReadPathName(ByVal wb As Workbook, ByVal nm As String) As S
     PQC_ReadPathName = s
 End Function
 
-' =============================================================
-' Small utilities (sheet/headers/table/pickers/math/clean)
-' =============================================================
+' ============================= UTILITIES (sheet/headers/table) =============================
 Private Function PQC_SheetExists(ByVal wb As Workbook, ByVal name As String) As Boolean
     On Error Resume Next
     PQC_SheetExists = Not wb.Worksheets(name) Is Nothing
@@ -462,7 +452,7 @@ Private Function PQC_EnsureTable(ByVal ws As Worksheet, ByVal tableName As Strin
         Set PQC_EnsureTable = lo: Exit Function
     End If
     Set rng = PQC_TrimUsedRange(ws)
-    If rng Is Nothing Then Err.Raise vbObjectError + 7801, , "No data found on sheet '" & ws.Name & "'."
+    If rng Is Nothing Then Err.Raise vbObjectError + 8401, , "No data found on sheet '" & ws.Name & "'."
     Set lo = ws.ListObjects.Add(xlSrcRange, rng, , xlYes)
     On Error Resume Next: lo.Name = tableName: On Error GoTo 0
     Set PQC_EnsureTable = lo
@@ -504,6 +494,7 @@ Private Function PQC_ListColumnIndex(ByVal lo As ListObject, ByVal headerName As
     Next i
 End Function
 
+' ============================= FILE PICKERS & MATH =============================
 Private Function PQC_PickFile(ByVal promptTitle As String, ByVal filterDesc As String, ByVal filterPattern As String) As String
     Dim fd As FileDialog
     Set fd = Application.FileDialog(msoFileDialogFilePicker)
