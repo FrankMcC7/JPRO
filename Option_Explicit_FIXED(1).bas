@@ -620,7 +620,7 @@ Private Sub BuildStatsSheet(ByVal iterWb As Workbook, _
     row = row + 1
 
     Dim startGlobal As Long: startGlobal = row
-    ws.Cells(row, 1).Value = "AllFund Total":                        ws.Cells(row, 2).Value = gTotal:     ws.Cells(row, 3).Value = 1:                                ws.Cells(row, 4).Value = "Denominator for %";                 row = row + 1
+    ws.Cells(row, 1).Value = "AllFund Total": ws.Cells(row, 2).Value = gTotal: ws.Cells(row, 3).Value = 1: ws.Cells(row, 4).Value = "Denominator for %": row = row + 1
     ws.Cells(row, 1).Value = "Credit Total (unique Copers)":          ws.Cells(row, 2).Value = gCreditTotal: ws.Cells(row, 4).Value = "De-duplicated from Credit files": row = row + 1
     ws.Cells(row, 1).Value = "AllFund Present in Credit":             ws.Cells(row, 2).Value = gIn:        ws.Cells(row, 3).Value = SafePercent(gIn, gTotal):         ws.Cells(row, 4).Value = "Coverage":                         row = row + 1
     ws.Cells(row, 1).Value = "AllFund NOT in Credit":                 ws.Cells(row, 2).Value = gOut:       ws.Cells(row, 3).Value = SafePercent(gOut, gTotal):        ws.Cells(row, 4).Value = "Gap":                              row = row + 1
