@@ -1,65 +1,71 @@
 Option Explicit
 
-' ============================
-' Post-Remediation QC (Standalone)
-' ============================
-Public Sub Run_PostRectification_QC()
+' ===== Post-Remediation QC that uses your frmCoperBatches batching flow =====
+Public Sub Run_PostRectification_QC_UsingForm()
     On Error GoTo Fail
 
     Dim iterPath As String
-    Dim wbIter As Workbook
-    Dim wsSum As Worksheet
-    Dim targetMap As Object            ' coper -> approved CoR (string)
-    Dim targetList() As String         ' 1-based array of unique copers
+    Dim wbIter As Workbook, wsSum As Worksheet
+    Dim targetMap As Object        ' coper -> Approved CoR
+    Dim targetList() As String     ' unique copers for batching
     Dim batchSize As Long: batchSize = 600
 
     ' 1) Pick Iteration workbook
     iterPath = PQC_PickFile("Select the Iteration workbook (Iteration_MMM-YYYY.xlsx)", "Excel Files (*.xlsx)", "*.xlsx")
-    If Len(iterPath) = 0 Then
-        MsgBox "Operation cancelled.", vbInformation
-        Exit Sub
-    End If
+    If Len(iterPath) = 0 Then Exit Sub
 
     Set wbIter = Workbooks.Open(Filename:=iterPath, ReadOnly:=False)
-    If Not PQC_SheetExists(wbIter, "CoR Mismatch Summary") Then
+    If Not SheetExists(wbIter, "CoR Mismatch Summary") Then
         MsgBox "'CoR Mismatch Summary' not found in the selected iteration file.", vbCritical
         GoTo Cleanup
     End If
     Set wsSum = wbIter.Worksheets("CoR Mismatch Summary")
 
-    ' 2) Build target map/list from CoR Mismatch Summary
+    ' 2) Build targets (coper -> Approved CoR) and list for batching
     Set targetMap = CreateObject("Scripting.Dictionary")
-    PQC_ParseMismatchSummary wsSum, targetMap, targetList
+    PQC_ParseMismatchSummaryToTargets wsSum, targetMap, targetList
     If targetMap.Count = 0 Then
         MsgBox "No copers found in 'CoR Mismatch Summary'. Nothing to QC.", vbInformation
         GoTo Cleanup
     End If
 
-    ' 3) Copy copers to clipboard in batches of 600 for user to paste in Credit Studio
-    PQC_BatchCopyLoop targetList, batchSize
+    ' 3) Use YOUR batching form: fill globals and show form
+    PQC_FillBatchGlobals targetList, batchSize         ' sets G_Batches, G_BatchIndex, G_BatchCount
+    G_WorkflowReadyToContinue = False
+    frmCoperBatches.Show vbModeless
 
-    ' 4) Pick UPDATED Credit Studio file(s)
+    MsgBox "Batches prepared. Paste each batch into Credit Studio and export the updated data." & vbCrLf & _
+           "When done exporting, click 'Move On' on the form to continue.", vbInformation
+
+    ' Wait until your form toggles the flag
+    Do While Not G_WorkflowReadyToContinue
+        DoEvents
+        Application.Wait Now + TimeSerial(0, 0, 1)
+    Loop
+
+    ' 4) Pick UPDATED Credit Studio XLSX file(s)
     Dim creditFiles As Collection, p As Variant
     Dim wbCredit As Workbook, loCredit As ListObject
-    Set creditFiles = PQC_PickFilesMulti("Select the UPDATED Credit Studio XLSX file(s) after rectification", "Excel Files (*.xlsx)", "*.xlsx")
+    Set creditFiles = PickFilesMulti("Select the UPDATED Credit Studio XLSX file(s) after rectification", "Excel Files (*.xlsx)", "*.xlsx")
     If creditFiles Is Nothing Or creditFiles.Count = 0 Then
         MsgBox "No updated Credit Studio files selected. Stopping.", vbInformation
         GoTo Cleanup
     End If
 
-    ' 5) Build updated credit map from the uploaded files (coper -> credit CoR)
+    ' 5) Build updated credit map (coper -> Credit CoR) from selected files
     Dim creditUpdated As Object: Set creditUpdated = CreateObject("Scripting.Dictionary")
     For Each p In creditFiles
         Set wbCredit = Workbooks.Open(Filename:=CStr(p), ReadOnly:=True)
-        Set loCredit = PQC_EnsureTable(wbCredit.Worksheets(1), "PQC_CreditTbl")
-        PQC_AppendCreditToDict loCredit, creditUpdated, "Coper ID", "Country of Risk"
+        Set loCredit = EnsureTable(wbCredit.Worksheets(1), "CreditTbl")
+        ' Reuse your existing helper; if you renamed it, swap the call accordingly:
+        '   AppendCreditToDict loCredit, creditUpdated, "Coper ID", "Country of Risk"
+        AppendCreditToDict loCredit, creditUpdated, "Coper ID", "Country of Risk"
         wbCredit.Close SaveChanges:=False
     Next p
 
-    ' 6) Compare & write Post-Remediation QC block into Stats
+    ' 6) Write Post-Remediation QC section in Iteration:Stats
     PQC_WritePostRemediationStats wbIter, targetMap, creditUpdated
 
-    ' 7) Save iteration workbook
     wbIter.Save
     MsgBox "Post-Remediation QC complete. Stats updated in the Iteration file.", vbInformation
 
@@ -74,20 +80,17 @@ Fail:
     Resume Cleanup
 End Sub
 
-' -----------------------------
-' Parse CoR Mismatch Summary
-' -----------------------------
-Private Sub PQC_ParseMismatchSummary(ByVal ws As Worksheet, ByRef outMap As Object, ByRef outList() As String)
+' ---------- Parse mismatch summary into dict + list ----------
+Private Sub PQC_ParseMismatchSummaryToTargets(ByVal ws As Worksheet, ByRef outMap As Object, ByRef outList() As String)
     Dim colCoR As Long, colCopers As Long
-    colCoR = PQC_FindHeader(ws, "Country of Risk (AllFund, post-Keys normalization)")
-    colCopers = PQC_FindHeader(ws, "Coper IDs with wrong CoR in Credit Studio (comma-joined)")
+    colCoR = FindHeader(ws, "Country of Risk (AllFund, post-Keys normalization)")
+    colCopers = FindHeader(ws, "Coper IDs with wrong CoR in Credit Studio (comma-joined)")
 
-    ' fallback header names (if user edited titles)
-    If colCoR = 0 Then colCoR = PQC_FindHeader(ws, "Country of Risk")
-    If colCopers = 0 Then colCopers = PQC_FindHeader(ws, "Coper IDs")
+    ' fallback if headers were edited
+    If colCoR = 0 Then colCoR = FindHeader(ws, "Country of Risk")
+    If colCopers = 0 Then colCopers = FindHeader(ws, "Coper IDs")
 
-    If colCoR = 0 Or colCopers = 0 Then Err.Raise vbObjectError + 3501, , _
-        "CoR Mismatch Summary: required columns not found."
+    If colCoR = 0 Or colCopers = 0 Then Err.Raise vbObjectError + 4501, , "CoR Mismatch Summary: columns not found."
 
     Dim lastRow As Long: lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
     Dim r As Long, aCoR As String, listStr As String, arr() As String, i As Long
@@ -100,7 +103,7 @@ Private Sub PQC_ParseMismatchSummary(ByVal ws As Worksheet, ByRef outMap As Obje
             arr = Split(listStr, ",")
             For i = LBound(arr) To UBound(arr)
                 Dim cid As String
-                cid = PQC_SanitizeCoperID(arr(i))
+                cid = SanitizeCoperID(arr(i))
                 If Len(cid) > 0 Then
                     outMap(cid) = aCoR
                     If Not uniq.Exists(cid) Then uniq.Add cid, True
@@ -121,30 +124,24 @@ Private Sub PQC_ParseMismatchSummary(ByVal ws As Worksheet, ByRef outMap As Obje
     End If
 End Sub
 
-' -----------------------------
-' Batch copy & user prompts
-' -----------------------------
-Private Sub PQC_BatchCopyLoop(ByRef ids() As String, ByVal batchSize As Long)
-    If Not PQC_IsArrayAllocated(ids) Then Err.Raise vbObjectError + 3601, , "No coper IDs to batch."
+' ---------- Fill your global batching variables for frmCoperBatches ----------
+Private Sub PQC_FillBatchGlobals(ByRef ids() As String, ByVal batchSize As Long)
+    Dim total As Long, batches As Long, b As Long, sIdx As Long, eIdx As Long
 
-    Dim total As Long: total = UBound(ids) - LBound(ids) + 1
-    Dim batches As Long: batches = (total \ batchSize) + IIf(total Mod batchSize = 0, 0, 1)
+    If Not PQC_IsArrayAllocated(ids) Then Err.Raise vbObjectError + 4502, , "No coper IDs to batch."
 
-    Dim b As Long, sIdx As Long, eIdx As Long, payload As String
+    total = UBound(ids) - LBound(ids) + 1
+    batches = (total \ batchSize) + IIf(total Mod batchSize = 0, 0, 1)
+
+    ReDim G_Batches(1 To batches)
     For b = 1 To batches
         sIdx = (b - 1) * batchSize + 1
         eIdx = WorksheetFunction.Min(b * batchSize, total)
-        payload = PQC_JoinRange(ids, sIdx, eIdx, ",")
-
-        PQC_CopyTextToClipboard payload
-        If b < batches Then
-            MsgBox "Batch " & b & " of " & batches & " copied to clipboard (" & (eIdx - sIdx + 1) & " IDs)." & vbCrLf & _
-                   "Paste into Credit Studio, export the updated data, then click OK for the next batch.", vbInformation
-        Else
-            MsgBox "Final batch copied to clipboard." & vbCrLf & _
-                   "Paste into Credit Studio and export the updated data. Then click OK to continue.", vbInformation
-        End If
+        G_Batches(b) = PQC_JoinRange(ids, sIdx, eIdx, ",")
     Next b
+
+    G_BatchIndex = 1
+    G_BatchCount = batches
 End Sub
 
 Private Function PQC_IsArrayAllocated(ByRef arr() As String) As Boolean
@@ -166,49 +163,23 @@ Private Function PQC_JoinRange(ByRef arr() As String, ByVal startIdx As Long, By
     PQC_JoinRange = s
 End Function
 
-' -----------------------------
-' Ingest updated Credit Studio files
-' -----------------------------
-Private Sub PQC_AppendCreditToDict(ByVal lo As ListObject, ByRef creditDict As Object, _
-                                   ByVal coperHeader As String, ByVal corHeader As String)
-    Dim idxC As Long, idxR As Long
-    idxC = PQC_GetColumnIndex(lo, coperHeader)
-    idxR = PQC_GetColumnIndex(lo, corHeader)
-    If idxC = 0 Then Err.Raise vbObjectError + 3701, , "Credit column '" & coperHeader & "' not found."
-    If idxR = 0 Then Err.Raise vbObjectError + 3702, , "Credit column '" & corHeader & "' not found."
-    If lo.DataBodyRange Is Nothing Then Exit Sub
-
-    Dim r As Long, cid As String, cor As String
-    For r = 1 To lo.DataBodyRange.Rows.Count
-        cid = PQC_SanitizeCoperID(lo.DataBodyRange.Cells(r, idxC).Value)
-        If Len(cid) > 0 Then
-            cor = Trim$(CStr(lo.DataBodyRange.Cells(r, idxR).Value))
-            creditDict(cid) = cor  ' last wins
-        End If
-    Next r
-End Sub
-
-' -----------------------------
-' Write Post-Remediation QC in Stats
-' -----------------------------
+' ---------- Write Post-Remediation QC into Stats ----------
 Private Sub PQC_WritePostRemediationStats(ByVal iterWb As Workbook, _
                                           ByVal targetMap As Object, _
                                           ByVal creditUpdated As Object)
 
     Dim ws As Worksheet
-    If PQC_SheetExists(iterWb, "Stats") Then
+    If SheetExists(iterWb, "Stats") Then
         Set ws = iterWb.Worksheets("Stats")
     Else
         Set ws = iterWb.Worksheets.Add(After:=iterWb.Sheets(iterWb.Sheets.Count))
         ws.Name = "Stats"
     End If
 
-    ' Append at bottom with spacing
     Dim row As Long
     row = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
     If row < 1 Then row = 1 Else row = row + 2
 
-    ' Section header
     With ws.Cells(row, 1)
         .Value = "Post-Remediation QC"
         .Font.Bold = True
@@ -216,7 +187,6 @@ Private Sub PQC_WritePostRemediationStats(ByVal iterWb As Workbook, _
     End With
     row = row + 1
 
-    ' Counters
     Dim totalTarget As Long, foundInCredit As Long, rectified As Long, stillMismatch As Long, notFound As Long
     Dim k As Variant, expected As String, got As String
 
@@ -237,7 +207,6 @@ Private Sub PQC_WritePostRemediationStats(ByVal iterWb As Workbook, _
         End If
     Next k
 
-    ' Table headers
     ws.Cells(row, 1).Value = "Metric"
     ws.Cells(row, 2).Value = "Count"
     ws.Cells(row, 3).Value = "% of Target"
@@ -257,89 +226,11 @@ Private Sub PQC_WritePostRemediationStats(ByVal iterWb As Workbook, _
     lo.Name = "PostRemediationQCTbl"
     lo.TableStyle = "TableStyleMedium9"
     On Error GoTo 0
-
     ws.Range(ws.Cells(startTbl, 3), ws.Cells(row - 1, 3)).NumberFormat = "0.0%"
     ws.Columns.AutoFit
 End Sub
 
-' -----------------------------
-' Tiny utilities (isolated)
-' -----------------------------
-Private Function PQC_SheetExists(ByVal wb As Workbook, ByVal name As String) As Boolean
-    On Error Resume Next
-    PQC_SheetExists = Not wb.Worksheets(name) Is Nothing
-    On Error GoTo 0
-End Function
-
-Private Function PQC_FindHeader(ByVal ws As Worksheet, ByVal headerName As String) As Long
-    Dim lastCol As Long, c As Long, target As String, val As String
-    If ws Is Nothing Then Exit Function
-    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
-    If lastCol < 1 Then Exit Function
-
-    target = LCase$(Trim$(headerName))
-    For c = 1 To lastCol
-        val = LCase$(Trim$(CStr(ws.Cells(1, c).Value)))
-        If val = target Then
-            PQC_FindHeader = c
-            Exit Function
-        End If
-    Next c
-End Function
-
-Private Function PQC_SanitizeCoperID(ByVal v As Variant) As String
-    Dim s As String
-    s = Trim$(CStr(v))
-    s = Replace(s, ",", "")
-    s = Replace(s, " ", "")
-    s = Replace(s, Chr$(160), "")
-    PQC_SanitizeCoperID = s
-End Function
-
-Private Function PQC_EnsureTable(ByVal ws As Worksheet, ByVal tableName As String) As ListObject
-    Dim lo As ListObject, rng As Range
-    If ws.ListObjects.Count > 0 Then
-        Set lo = ws.ListObjects(1)
-        On Error Resume Next: lo.Name = tableName: On Error GoTo 0
-        Set PQC_EnsureTable = lo: Exit Function
-    End If
-    Set rng = PQC_TrimUsedRange(ws)
-    If rng Is Nothing Then Err.Raise vbObjectError + 3801, , "No data found on sheet '" & ws.Name & "'."
-    Set lo = ws.ListObjects.Add(xlSrcRange, rng, , xlYes)
-    On Error Resume Next: lo.Name = tableName: On Error GoTo 0
-    Set PQC_EnsureTable = lo
-End Function
-
-Private Function PQC_TrimUsedRange(ByVal ws As Worksheet) As Range
-    Dim ur As Range, r1 As Long, r2 As Long, c1 As Long, c2 As Long
-    Set ur = ws.UsedRange
-    If ur Is Nothing Then Exit Function
-    r1 = ur.Row: r2 = ur.Rows(ur.Rows.Count).Row
-    c1 = ur.Column: c2 = ur.Columns(ur.Columns.Count).Column
-    Do While r1 <= r2 And Application.CountA(ws.Rows(r1)) = 0: r1 = r1 + 1: Loop
-    Do While r2 >= r1 And Application.CountA(ws.Rows(r2)) = 0: r2 = r2 - 1: Loop
-    Do While c1 <= c2 And Application.CountA(ws.Columns(c1)) = 0: c1 = c1 + 1: Loop
-    Do While c2 >= c1 And Application.CountA(ws.Columns(c2)) = 0: c2 = c2 - 1: Loop
-    If r2 < r1 Or c2 < c1 Then
-        Set PQC_TrimUsedRange = Nothing
-    Else
-        Set PQC_TrimUsedRange = ws.Range(ws.Cells(r1, c1), ws.Cells(r2, c2))
-    End If
-End Function
-
-Private Function PQC_GetColumnIndex(ByVal lo As ListObject, ByVal headerName As String) As Long
-    Dim i As Long
-    For i = 1 To lo.HeaderRowRange.Columns.Count
-        If Trim$(LCase$(CStr(lo.HeaderRowRange.Cells(1, i).Value))) = Trim$(LCase$(headerName)) Then
-            PQC_GetColumnIndex = i: Exit Function
-        End If
-    Next i
-    PQC_GetColumnIndex = 0
-End Function
-
-' -----------------------------
-' File pickers
-' -----------------------------
+' ---------- Tiny utilities (isolated to avoid collisions) ----------
 Private Function PQC_PickFile(ByVal promptTitle As String, ByVal filterDesc As String, ByVal filterPattern As String) As String
     Dim fd As FileDialog
     Set fd = Application.FileDialog(msoFileDialogFilePicker)
@@ -352,90 +243,12 @@ Private Function PQC_PickFile(ByVal promptTitle As String, ByVal filterDesc As S
     End With
 End Function
 
-Private Function PQC_PickFilesMulti(ByVal promptTitle As String, _
-                                    ByVal filterDesc As String, _
-                                    ByVal filterPattern As String) As Collection
-    Dim fd As FileDialog, i As Long
-    Dim c As New Collection
-    Set fd = Application.FileDialog(msoFileDialogFilePicker)
-    With fd
-        .Title = promptTitle
-        .Filters.Clear
-        .Filters.Add filterDesc, filterPattern
-        .AllowMultiSelect = True
-        If .Show = -1 Then
-            For i = 1 To .SelectedItems.Count
-                c.Add .SelectedItems(i)
-            Next i
-        End If
-    End With
-    Set PQC_PickFilesMulti = c
-End Function
-
-' -----------------------------
-' Clipboard (MSForms first; API fallback)
-' -----------------------------
-Private Sub PQC_CopyTextToClipboard(ByVal textVal As String)
-    On Error Resume Next
-    Dim o As Object
-    Set o = CreateObject("MSForms.DataObject")
-    If Err.Number = 0 Then
-        o.SetText textVal
-        o.PutInClipboard
-        Exit Sub
-    End If
-    On Error GoTo 0
-    PQC_ClipboardSetTextAPI textVal
-End Sub
-
-#If VBA7 Then
-    Private Declare PtrSafe Function OpenClipboard Lib "user32" (ByVal hwnd As LongPtr) As Long
-    Private Declare PtrSafe Function CloseClipboard Lib "user32" () As Long
-    Private Declare PtrSafe Function EmptyClipboard Lib "user32" () As Long
-    Private Declare PtrSafe Function SetClipboardData Lib "user32" (ByVal wFormat As Long, ByVal hMem As LongPtr) As LongPtr
-    Private Declare PtrSafe Function GlobalAlloc Lib "kernel32" (ByVal uFlags As Long, ByVal dwBytes As LongPtr) As LongPtr
-    Private Declare PtrSafe Function GlobalLock Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
-    Private Declare PtrSafe Function GlobalUnlock Lib "kernel32" (ByVal hMem As LongPtr) As Long
-    Private Declare PtrSafe Function lstrcpyW Lib "kernel32" (ByVal lpString1 As LongPtr, ByVal lpString2 As LongPtr) As LongPtr
-    Private Const GMEM_MOVEABLE As Long = &H2
-    Private Const CF_UNICODETEXT As Long = 13&
-#Else
-    Private Declare Function OpenClipboard Lib "user32" (ByVal hwnd As Long) As Long
-    Private Declare Function CloseClipboard Lib "user32" () As Long
-    Private Declare Function EmptyClipboard Lib "user32" () As Long
-    Private Declare Function SetClipboardData Lib "user32" (ByVal wFormat As Long, ByVal hMem As Long) As Long
-    Private Declare Function GlobalAlloc Lib "kernel32" (ByVal uFlags As Long, ByVal dwBytes As Long) As Long
-    Private Declare Function GlobalLock Lib "kernel32" (ByVal hMem As Long) As Long
-    Private Declare Function GlobalUnlock Lib "kernel32" (ByVal hMem As Long) As Long
-    Private Declare Function lstrcpyW Lib "kernel32" (ByVal lpString1 As Long, ByVal lpString2 As Long) As Long
-    Private Const GMEM_MOVEABLE As Long = &H2
-    Private Const CF_UNICODETEXT As Long = 13&
-#End If
-
-Private Sub PQC_ClipboardSetTextAPI(ByVal textVal As String)
-#If VBA7 Then
-    Dim bytesNeeded As LongPtr, hGlobal As LongPtr, pGlobal As LongPtr, copyRes As LongPtr
-    Dim ok As Long
-#Else
-    Dim bytesNeeded As Long, hGlobal As Long, pGlobal As Long, copyRes As Long, ok As Long
-#End If
-    bytesNeeded = (Len(textVal) * 2) + 2
-    hGlobal = GlobalAlloc(GMEM_MOVEABLE, bytesNeeded)
-    If hGlobal = 0 Then Err.Raise vbObjectError + 3901, , "Clipboard alloc failed."
-    pGlobal = GlobalLock(hGlobal)
-    If pGlobal = 0 Then Err.Raise vbObjectError + 3902, , "Clipboard lock failed."
-    copyRes = lstrcpyW(pGlobal, StrPtr(textVal))
-    GlobalUnlock hGlobal
-    ok = OpenClipboard(0)
-    If ok = 0 Then Err.Raise vbObjectError + 3903, , "OpenClipboard failed."
-    EmptyClipboard
-    SetClipboardData CF_UNICODETEXT, hGlobal
-    CloseClipboard
-End Sub
-
-' -----------------------------
-' Math
-' -----------------------------
 Private Function PQC_SafePercent(ByVal num As Long, ByVal den As Long) As Double
     If den <= 0 Then PQC_SafePercent = 0 Else PQC_SafePercent = num / den
+End Function
+
+Private Function SheetExists(ByVal wb As Workbook, ByVal name As String) As Boolean
+    On Error Resume Next
+    SheetExists = Not wb.Worksheets(name) Is Nothing
+    On Error GoTo 0
 End Function
