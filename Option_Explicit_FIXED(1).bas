@@ -1509,3 +1509,13 @@ Private Function UnionKeys(ByVal d1 As Object, _
     Set UnionKeys = u
 End Function
 
+' --- CLEANUP TEMP SHEETS IN MAIN FILE ---
+Dim tmpWs As Worksheet
+For Each tmpWs In wbMain.Worksheets
+    Select Case tmpWs.Name
+        Case Format(Date, "ddmmyy"), "CoR Recali", "CoR Mismatch Summary"
+            Application.DisplayAlerts = False
+            tmpWs.Delete
+            Application.DisplayAlerts = True
+    End Select
+Next tmpWs
