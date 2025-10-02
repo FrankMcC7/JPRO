@@ -1467,6 +1467,7 @@ Private Function NzLngNested(ByVal dict As Object, ByVal regKey As Variant, ByVa
 End Function
 
 ' Union of top-level keys across up to 5 dictionaries; returns a dictionary of unique keys
+' Union of top-level keys across up to 5 dictionaries; returns a dictionary of unique keys
 Private Function UnionKeys(ByVal d1 As Object, _
                            Optional ByVal d2 As Object, _
                            Optional ByVal d3 As Object, _
@@ -1474,11 +1475,37 @@ Private Function UnionKeys(ByVal d1 As Object, _
                            Optional ByVal d5 As Object) As Object
     Dim u As Object: Set u = CreateObject("Scripting.Dictionary")
     Dim k As Variant
-    If Not d1 Is Nothing Then For Each k In d1.Keys: If Not u.Exists(k) Then u.Add k, True: Next k
-    If Not d2 Is Nothing Then For Each k In d2.Keys: If Not u.Exists(k) Then u.Add k, True: Next k
-    If Not d3 Is Nothing Then For Each k In d3.Keys: If Not u.Exists(k) Then u.Add k, True: Next k
-    If Not d4 Is Nothing Then For Each k In d4.Keys: If Not u.Exists(k) Then u.Add k, True: Next k
-    If Not d5 Is Nothing Then For Each k In d5.Keys: If Not u.Exists(k) Then u.Add k, True: Next k
+
+    If Not d1 Is Nothing Then
+        For Each k In d1.Keys
+            If Not u.Exists(k) Then u.Add k, True
+        Next k
+    End If
+
+    If Not d2 Is Nothing Then
+        For Each k In d2.Keys
+            If Not u.Exists(k) Then u.Add k, True
+        Next k
+    End If
+
+    If Not d3 Is Nothing Then
+        For Each k In d3.Keys
+            If Not u.Exists(k) Then u.Add k, True
+        Next k
+    End If
+
+    If Not d4 Is Nothing Then
+        For Each k In d4.Keys
+            If Not u.Exists(k) Then u.Add k, True
+        Next k
+    End If
+
+    If Not d5 Is Nothing Then
+        For Each k In d5.Keys
+            If Not u.Exists(k) Then u.Add k, True
+        Next k
+    End If
+
     Set UnionKeys = u
 End Function
 
