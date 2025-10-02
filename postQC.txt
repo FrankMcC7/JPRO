@@ -367,16 +367,24 @@ Private Sub PQC_SaveTargetsForContinuation(ByVal wbIter As Workbook, ByVal targe
     ws.Name = "__PQC_CACHE__"
     ws.Visible = xlSheetVeryHidden
 
+    ' Headers
     ws.Cells(1, 1).Value = "CoperID"
     ws.Cells(1, 2).Value = "ApprovedCoR"
 
+    ' Force text in the CoperID column
+    ws.Columns(1).NumberFormat = "@"
+
+    ' Rows
     r = 2
     For Each k In targetMap.Keys
-        ws.Cells(r, 1).Value = CStr(k)
+        ' Write as text explicitly
+        ws.Cells(r, 1).NumberFormat = "@"
+        ws.Cells(r, 1).Value = "'" & CStr(k)          ' leading apostrophe = text
         ws.Cells(r, 2).Value = CStr(targetMap(k))
         r = r + 1
     Next k
 End Sub
+
 
 Private Function PQC_LoadTargetsForContinuation(ByVal wbIter As Workbook) As Object
     Dim ws As Worksheet, lastRow As Long, r As Long
