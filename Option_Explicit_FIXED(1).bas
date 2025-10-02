@@ -191,6 +191,17 @@ Cleanup:
     If Not wbAllFund Is Nothing Then wbAllFund.Close SaveChanges:=False
     On Error GoTo 0
 
+    ' --- CLEANUP TEMP SHEETS IN MAIN FILE ---
+    Dim tmpWs As Worksheet
+    For Each tmpWs In wbMain.Worksheets
+        Select Case tmpWs.Name
+            Case wsDate.Name, "CoR Recali", "CoR Mismatch Summary"
+                Application.DisplayAlerts = False
+                tmpWs.Delete
+                Application.DisplayAlerts = True
+        End Select
+    Next tmpWs
+
     MsgBox "Done. Outputs saved under: " & OutputFolderPrevMonth(), vbInformation
     Exit Sub
 
