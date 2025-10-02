@@ -1,0 +1,289 @@
+Option Explicit
+
+' ========= POST-REMEDIATION QC WORKFLOW =========
+' Entry point
+Public Sub Run_PostRectification_QC()
+    On Error GoTo Fail
+
+    Dim iterPath As String, wbIter As Workbook
+    Dim wsSum As Worksheet
+    Dim targetMap As Object             ' coper -> approved CoR (AllFund)
+    Dim targetList() As String          ' array of coper IDs (unique)
+    Dim batchSize As Long: batchSize = 600
+
+    ' 1) Pick the Iteration workbook
+    iterPath = PickFile("Select the Iteration workbook (Iteration_MMM-YYYY.xlsx)", "Excel Files (*.xlsx)", "*.xlsx")
+    If Len(iterPath) = 0 Then
+        MsgBox "Operation cancelled.", vbInformation
+        Exit Sub
+    End If
+
+    Set wbIter = Workbooks.Open(Filename:=iterPath, ReadOnly:=False)
+    If Not SheetExists(wbIter, "CoR Mismatch Summary") Then
+        MsgBox "'CoR Mismatch Summary' not found in the selected iteration file.", vbCritical
+        GoTo Cleanup
+    End If
+    Set wsSum = wbIter.Worksheets("CoR Mismatch Summary")
+
+    ' 2) Parse mismatch summary -> targetMap + targetList
+    Set targetMap = CreateObject("Scripting.Dictionary")
+    ParseMismatchSummary wsSum, targetMap, targetList
+    If targetMap.Count = 0 Then
+        MsgBox "No copers found in CoR Mismatch Summary.", vbInformation
+        GoTo Cleanup
+    End If
+
+    ' 3) Copy copers in batches using the same modeless form flow
+    PrepareBatchedClipboard targetList, batchSize
+    frmCoperBatches.Show vbModeless
+    MsgBox "Batches are prepared and shown. Paste each batch into Credit Studio and export the updated data. " & _
+           "When done exporting, click 'Move On' in the form to continue.", vbInformation
+
+    ' Wait for userform to set the continue flag (your form already does this in the main flow)
+    DoEvents
+
+    ' 4) Pick updated Credit Studio export file(s)
+    Dim creditFiles As Collection, p As Variant
+    Dim wbCredit As Workbook, loCredit As ListObject
+    Set creditFiles = PickFilesMulti("Select the UPDATED Credit Studio XLSX file(s) after rectification", "Excel Files (*.xlsx)", "*.xlsx")
+    If creditFiles Is Nothing Or creditFiles.Count = 0 Then
+        MsgBox "No updated Credit Studio files selected. Stopping.", vbInformation
+        GoTo Cleanup
+    End If
+
+    ' 5) Build updated credit map from the uploaded files
+    Dim creditUpdated As Object: Set creditUpdated = CreateObject("Scripting.Dictionary") ' coper -> credit CoR
+    For Each p In creditFiles
+        Set wbCredit = Workbooks.Open(Filename:=CStr(p), ReadOnly:=True)
+        Set loCredit = EnsureTable(wbCredit.Worksheets(1), "CreditTbl")
+        AppendCreditToDict loCredit, creditUpdated, "Coper ID", "Country of Risk"
+        wbCredit.Close SaveChanges:=False
+    Next p
+
+    ' 6) Compare and write Post-Remediation QC to Stats sheet
+    WritePostRemediationStats wbIter, targetMap, creditUpdated
+
+    ' 7) Save the iteration workbook
+    wbIter.Save
+    MsgBox "Post-Remediation QC complete. Stats updated in the Iteration file.", vbInformation
+
+Cleanup:
+    On Error Resume Next
+    If Not wbIter Is Nothing Then wbIter.Close SaveChanges:=True
+    On Error GoTo 0
+    Exit Sub
+
+Fail:
+    MsgBox "Error " & Err.Number & ": " & Err.Description, vbCritical
+    Resume Cleanup
+End Sub
+
+
+' ========= PARSE MISMATCH SUMMARY =========
+' Reads "CoR Mismatch Summary" and builds:
+'   outMap(coper) = Approved CoR (from the summary)
+'   outList()     = unique coper IDs (string array)
+Private Sub ParseMismatchSummary(ByVal ws As Worksheet, ByRef outMap As Object, ByRef outList() As String)
+    Dim colCoR As Long, colCopers As Long
+    colCoR = FindHeader(ws, "Country of Risk (AllFund, post-Keys normalization)")
+    colCopers = FindHeader(ws, "Coper IDs with wrong CoR in Credit Studio (comma-joined)")
+
+    ' fallback if exact headers changed
+    If colCoR = 0 Then colCoR = FindHeader(ws, "Country of Risk")
+    If colCopers = 0 Then colCopers = FindHeader(ws, "Coper IDs")
+
+    If colCoR = 0 Or colCopers = 0 Then Err.Raise vbObjectError + 501, , "CoR Mismatch Summary: required columns not found."
+
+    Dim lastRow As Long: lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    Dim r As Long, aCoR As String, listStr As String, arr() As String, i As Long
+    Dim tmp As Object: Set tmp = CreateObject("Scripting.Dictionary")
+
+    For r = 2 To lastRow
+        aCoR = Trim$(CStr(ws.Cells(r, colCoR).Value))
+        listStr = Trim$(CStr(ws.Cells(r, colCopers).Value))
+        If Len(aCoR) > 0 And Len(listStr) > 0 Then
+            arr = Split(listStr, ",")
+            For i = LBound(arr) To UBound(arr)
+                Dim cid As String
+                cid = SanitizeCoperID(arr(i))
+                If Len(cid) > 0 Then
+                    outMap(cid) = aCoR
+                    If Not tmp.Exists(cid) Then tmp.Add cid, True
+                End If
+            Next i
+        End If
+    Next r
+
+    If tmp.Count > 0 Then
+        ReDim outList(1 To tmp.Count)
+        Dim k As Variant, n As Long: n = 0
+        For Each k In tmp.Keys
+            n = n + 1
+            outList(n) = CStr(k)
+        Next k
+    Else
+        Erase outList
+    End If
+End Sub
+
+
+' ========= BATCH PREP (reuses your modeless form) =========
+' Prepares global batch state for frmCoperBatches: 600 per batch by default
+Private Sub PrepareBatchedClipboard(ByRef ids() As String, ByVal batchSize As Long)
+    Dim total As Long, batches As Long
+    Dim i As Long, b As Long, sIdx As Long, eIdx As Long
+
+    If Not IsArrayAllocated(ids) Then Err.Raise vbObjectError + 510, , "No coper IDs to batch."
+
+    total = UBound(ids) - LBound(ids) + 1
+    batches = (total \ batchSize) + IIf(total Mod batchSize = 0, 0, 1)
+
+    ReDim G_Batches(1 To batches)
+    For b = 1 To batches
+        sIdx = (b - 1) * batchSize + 1
+        eIdx = WorksheetFunction.Min(b * batchSize, total)
+        G_Batches(b) = JoinRange(ids, sIdx, eIdx, ",")
+    Next b
+
+    G_BatchIndex = 1
+    G_BatchCount = batches
+    G_WorkflowReadyToContinue = False
+End Sub
+
+' Safe check used in other parts of your codebase; included for completeness
+Private Function IsArrayAllocated(ByRef arr() As String) As Boolean
+    On Error GoTo EH
+    Dim lb As Long, ub As Long
+    lb = LBound(arr): ub = UBound(arr)
+    IsArrayAllocated = (ub >= lb)
+    Exit Function
+EH:
+    IsArrayAllocated = False
+End Function
+
+Private Function JoinRange(ByRef arr() As String, ByVal startIdx As Long, ByVal endIdx As Long, ByVal delim As String) As String
+    Dim i As Long, s As String
+    For i = startIdx To endIdx
+        If Len(s) > 0 Then s = s & delim
+        s = s & arr(i)
+    Next i
+    JoinRange = s
+End Function
+
+
+' ========= INGEST UPDATED CREDIT FILES =========
+' Append from Credit Studio table into dictionary: creditDict(coper) = CoR
+Private Sub AppendCreditToDict(ByVal lo As ListObject, ByRef creditDict As Object, _
+                               ByVal coperHeader As String, ByVal corHeader As String)
+    Dim idxC As Long, idxR As Long
+    idxC = GetColumnIndex(lo, coperHeader)
+    idxR = GetColumnIndex(lo, corHeader)
+    If idxC = 0 Then Err.Raise vbObjectError + 520, , "Credit column '" & coperHeader & "' not found."
+    If idxR = 0 Then Err.Raise vbObjectError + 521, , "Credit column '" & corHeader & "' not found."
+    If lo.DataBodyRange Is Nothing Then Exit Sub
+
+    Dim r As Long, cid As String, cor As String
+    For r = 1 To lo.DataBodyRange.Rows.Count
+        cid = SanitizeCoperID(lo.DataBodyRange.Cells(r, idxC).Value)
+        If Len(cid) > 0 Then
+            cor = Trim$(CStr(lo.DataBodyRange.Cells(r, idxR).Value))
+            creditDict(cid) = cor  ' last wins
+        End If
+    Next r
+End Sub
+
+
+' ========= WRITE POST-REMEDIATION STATS INTO ITERATION:STATS =========
+Private Sub WritePostRemediationStats(ByVal iterWb As Workbook, _
+                                      ByVal targetMap As Object, _
+                                      ByVal creditUpdated As Object)
+
+    If Not SheetExists(iterWb, "Stats") Then
+        iterWb.Worksheets.Add(After:=iterWb.Sheets(iterWb.Sheets.Count)).Name = "Stats"
+    End If
+
+    Dim ws As Worksheet: Set ws = iterWb.Worksheets("Stats")
+
+    ' Find next free area at bottom
+    Dim row As Long
+    row = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If row < 1 Then row = 1 Else row = row + 2
+
+    ' Header
+    With ws.Cells(row, 1)
+        .Value = "Post-Remediation QC"
+        .Font.Bold = True
+        .Font.Size = 14
+    End With
+    row = row + 1
+
+    ' Build counters
+    Dim totalTarget As Long, foundInCredit As Long, rectified As Long, stillMismatch As Long, notFound As Long
+    Dim k As Variant, expected As String, got As String
+
+    totalTarget = targetMap.Count
+
+    For Each k In targetMap.Keys
+        expected = Trim$(CStr(targetMap(k)))
+        If creditUpdated.Exists(k) Then
+            foundInCredit = foundInCredit + 1
+            got = Trim$(CStr(creditUpdated(k)))
+            If StrComp(expected, got, vbTextCompare) = 0 Then
+                rectified = rectified + 1
+            Else
+                stillMismatch = stillMismatch + 1
+            End If
+        Else
+            notFound = notFound + 1
+        End If
+    Next k
+
+    ' Table headers
+    ws.Cells(row, 1).Value = "Metric"
+    ws.Cells(row, 2).Value = "Count"
+    ws.Cells(row, 3).Value = "% of Target"
+    ws.Range(ws.Cells(row, 1), ws.Cells(row, 3)).Font.Bold = True
+    row = row + 1
+
+    Dim startTbl As Long: startTbl = row
+    ws.Cells(row, 1).Value = "Target Copers (from CoR Mismatch Summary)": ws.Cells(row, 2).Value = totalTarget: ws.Cells(row, 3).Value = SafePercent(totalTarget, totalTarget): row = row + 1
+    ws.Cells(row, 1).Value = "Found in Updated Credit":                   ws.Cells(row, 2).Value = foundInCredit: ws.Cells(row, 3).Value = SafePercent(foundInCredit, totalTarget): row = row + 1
+    ws.Cells(row, 1).Value = "Rectified (Credit CoR now matches Approved)": ws.Cells(row, 2).Value = rectified: ws.Cells(row, 3).Value = SafePercent(rectified, totalTarget): row = row + 1
+    ws.Cells(row, 1).Value = "Still Mismatched":                           ws.Cells(row, 2).Value = stillMismatch: ws.Cells(row, 3).Value = SafePercent(stillMismatch, totalTarget): row = row + 1
+    ws.Cells(row, 1).Value = "Not Found in Updated Credit":                ws.Cells(row, 2).Value = notFound: ws.Cells(row, 3).Value = SafePercent(notFound, totalTarget): row = row + 1
+
+    Dim lo As ListObject
+    Set lo = ws.ListObjects.Add(xlSrcRange, ws.Range(ws.Cells(startTbl - 1, 1), ws.Cells(row - 1, 3)), , xlYes)
+    On Error Resume Next
+    lo.Name = "PostRemediationQCTbl"
+    lo.TableStyle = "TableStyleMedium9"
+    On Error GoTo 0
+    ws.Range(ws.Cells(startTbl, 3), ws.Cells(row - 1, 3)).NumberFormat = "0.0%"
+    ws.Columns.AutoFit
+End Sub
+
+
+' ========= SMALL UTILITIES =========
+Private Function SheetExists(ByVal wb As Workbook, ByVal name As String) As Boolean
+    On Error Resume Next
+    SheetExists = Not wb.Worksheets(name) Is Nothing
+    On Error GoTo 0
+End Function
+
+' If your project already has SafePercent, delete this duplicate.
+Private Function SafePercent(ByVal num As Long, ByVal den As Long) As Double
+    If den <= 0 Then SafePercent = 0 Else SafePercent = num / den
+End Function
+
+' Reuse your existing file picker from the main script.
+Private Function PickFile(ByVal promptTitle As String, ByVal filterDesc As String, ByVal filterPattern As String) As String
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = promptTitle
+        .Filters.Clear
+        .Filters.Add filterDesc, filterPattern
+        .AllowMultiSelect = False
+        If .Show = -1 Then PickFile = .SelectedItems(1)
+    End With
+End Function
