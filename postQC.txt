@@ -125,6 +125,8 @@ Public Sub Run_PostQC_Continue_PQC()
 
     ' 5) Compare with Keys normalization; write Post-Remediation QC into Iteration:Stats
     PQC_WritePostRemediationStats wbIter, targetMap, creditUpdated, keysMap
+    PQC_WritePostQCMismatchSummary wbIter, targetMap, creditUpdated, keysMap
+
 
     wbIter.Save
     MsgBox "Post-Remediation QC complete. Stats updated in the Iteration file.", vbInformation
@@ -530,3 +532,77 @@ End Function
 Private Function PQC_SafePercent(ByVal num As Long, ByVal den As Long) As Double
     If den <= 0 Then PQC_SafePercent = 0 Else PQC_SafePercent = num / den
 End Function
+
+' Create/refresh a Post-QC mismatch summary sheet (same format as original)
+Private Sub PQC_WritePostQCMismatchSummary(ByVal iterWb As Workbook, _
+                                           ByVal targetMap As Object, _
+                                           ByVal creditUpdated As Object, _
+                                           ByVal keysMap As Object)
+    Dim ws As Worksheet
+    ' Recreate sheet fresh
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    iterWb.Worksheets("Post-QC CoR Mismatch Summary").Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+
+    Set ws = iterWb.Worksheets.Add(After:=iterWb.Sheets(iterWb.Sheets.Count))
+    ws.Name = "Post-QC CoR Mismatch Summary"
+
+    ' Headers (same as original summary)
+    ws.Cells(1, 1).Value = "Country of Risk (AllFund, post-Keys normalization)"
+    ws.Cells(1, 2).Value = "Coper IDs with wrong CoR in Credit Studio (comma-joined)"
+    ws.Range("A1:B1").Font.Bold = True
+
+    ' Group still-mismatched by Approved CoR (after Keys normalization)
+    Dim groups As Object: Set groups = CreateObject("Scripting.Dictionary") ' expectedN -> dict of copers
+    Dim k As Variant, expected As String, expectedN As String, got As String, gotN As String
+
+    For Each k In targetMap.Keys
+        expected = Trim$(CStr(targetMap(k)))
+        expectedN = PQC_NormalizeCoR(expected, keysMap)
+
+        If creditUpdated.Exists(k) Then
+            got = Trim$(CStr(creditUpdated(k)))
+            gotN = PQC_NormalizeCoR(got, keysMap)
+
+            ' still mismatched only
+            If StrComp(expectedN, gotN, vbTextCompare) <> 0 Then
+                If Not groups.Exists(expectedN) Then
+                    groups.Add expectedN, CreateObject("Scripting.Dictionary")
+                End If
+                If Not groups(expectedN).Exists(CStr(k)) Then
+                    groups(expectedN).Add CStr(k), True
+                End If
+            End If
+        End If
+        ' Note: "not found" are intentionally excluded from this sheet
+    Next k
+
+    ' Output rows
+    Dim row As Long: row = 2
+    Dim expKey As Variant, coperKey As Variant, joined As String
+    For Each expKey In groups.Keys
+        joined = ""
+        For Each coperKey In groups(expKey).Keys
+            If Len(joined) > 0 Then joined = joined & ","
+            joined = joined & CStr(coperKey)
+        Next coperKey
+
+        ws.Cells(row, 1).Value = expKey
+        ws.Cells(row, 2).Value = joined
+        row = row + 1
+    Next expKey
+
+    ' Format as a table if any data
+    If row > 2 Then
+        Dim lo As ListObject
+        Set lo = ws.ListObjects.Add(xlSrcRange, ws.Range(ws.Cells(1, 1), ws.Cells(row - 1, 2)), , xlYes)
+        On Error Resume Next
+        lo.Name = "PostQCMismatchTbl"
+        lo.TableStyle = "TableStyleMedium9"
+        On Error GoTo 0
+    End If
+
+    ws.Columns.AutoFit
+End Sub
