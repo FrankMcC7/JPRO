@@ -1,3 +1,12 @@
+Private Sub cmdMoveOn_Click()
+    ' (Optional) existing clipboard / UI code...
+    ' Close or hide the form:
+    Unload Me
+    ' Kick off the continuation:
+    Run_PostQC_Continue_PQC
+End Sub
+
+
 Option Explicit
 
 ' =============================================================
