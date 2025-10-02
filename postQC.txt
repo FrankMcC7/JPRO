@@ -541,7 +541,6 @@ Private Function PQC_SafePercent(ByVal num As Long, ByVal den As Long) As Double
     If den <= 0 Then PQC_SafePercent = 0 Else PQC_SafePercent = num / den
 End Function
 
-' Create/refresh a Post-QC mismatch summary sheet (same format as original)
 Private Sub PQC_WritePostQCMismatchSummary(ByVal iterWb As Workbook, _
                                            ByVal targetMap As Object, _
                                            ByVal creditUpdated As Object, _
@@ -561,6 +560,9 @@ Private Sub PQC_WritePostQCMismatchSummary(ByVal iterWb As Workbook, _
     ws.Cells(1, 1).Value = "Country of Risk (AllFund, post-Keys normalization)"
     ws.Cells(1, 2).Value = "Coper IDs with wrong CoR in Credit Studio (comma-joined)"
     ws.Range("A1:B1").Font.Bold = True
+
+    ' Ensure the Coper IDs column will be text
+    ws.Columns(2).NumberFormat = "@"
 
     ' Group still-mismatched by Approved CoR (after Keys normalization)
     Dim groups As Object: Set groups = CreateObject("Scripting.Dictionary") ' expectedN -> dict of copers
@@ -597,8 +599,13 @@ Private Sub PQC_WritePostQCMismatchSummary(ByVal iterWb As Workbook, _
             joined = joined & CStr(coperKey)
         Next coperKey
 
+        ' Country of Risk
         ws.Cells(row, 1).Value = expKey
-        ws.Cells(row, 2).Value = joined
+
+        ' Joined coper IDs as *text*
+        ws.Cells(row, 2).NumberFormat = "@"
+        ws.Cells(row, 2).Value = "'" & joined      ' force text to prevent thousand separators
+
         row = row + 1
     Next expKey
 
