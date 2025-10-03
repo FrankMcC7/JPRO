@@ -286,18 +286,25 @@ Private Sub FilterAllFundCriteria(ByRef lo As ListObject, ByVal keepBUs As Varia
     Dim colCount As Long
     Dim destRow As Long
     Dim area As Range
-    Dim areaData As Variant
     Dim headerArr As Variant
     Dim loIt As ListObject
-    Dim rowCount As Long
-    Dim areaCols As Long
-    Dim r As Long
     Dim c As Long
-    Dim writeRows As Long
-    Dim outArr As Variant
-    Dim rowHasData As Boolean
-    Dim wroteData As Boolean
     Dim headerVal As String
+    Dim firstCol As Long
+    Dim headerRow As Long
+    Dim lastCol As Long
+    Dim origRowCount As Long
+    Dim originalLastRow As Long
+    Dim rowRange As Range
+    Dim rowVals As Variant
+    Dim rowHasData As Boolean
+    Dim lbRow As Long
+    Dim lbCol As Long
+    Dim arrRows As Long
+    Dim arrCols As Long
+    Dim relCol As Long
+    Dim rr As Long
+    Dim normalized As Variant
 
     If buCol = 0 Then Err.Raise vbObjectError + 1101, , "Column 'Business Unit' not found."
     If revCol = 0 Then Err.Raise vbObjectError + 1102, , "Column 'Review Status' not found."
@@ -310,6 +317,10 @@ Private Sub FilterAllFundCriteria(ByRef lo As ListObject, ByVal keepBUs As Varia
     colCount = lo.HeaderRowRange.Columns.Count
     If colCount = 0 Then Err.Raise vbObjectError + 1103, , "AllFund table has no columns."
 
+    headerRow = lo.HeaderRowRange.Row
+    firstCol = lo.HeaderRowRange.Column
+    lastCol = firstCol + colCount - 1
+
     ReDim headerArr(1 To 1, 1 To colCount)
     For c = 1 To colCount
         headerVal = CStr(lo.HeaderRowRange.Cells(1, c).Value)
@@ -319,13 +330,13 @@ Private Sub FilterAllFundCriteria(ByRef lo As ListObject, ByVal keepBUs As Varia
             headerArr(1, c) = headerVal
         End If
     Next c
+    ws.Range(ws.Cells(headerRow, firstCol), ws.Cells(headerRow, lastCol)).Value = headerArr
 
-    ws.Cells.Clear
-    ws.Range("A1").Resize(1, colCount).Value = headerArr
-    destRow = 2
-    wroteData = False
+    destRow = headerRow + 1
 
     If Not lo.DataBodyRange Is Nothing Then
+        origRowCount = lo.DataBodyRange.Rows.Count
+
         On Error Resume Next
         Set rngVisible = lo.DataBodyRange.SpecialCells(xlCellTypeVisible)
         If Err.Number <> 0 Then
@@ -333,58 +344,66 @@ Private Sub FilterAllFundCriteria(ByRef lo As ListObject, ByVal keepBUs As Varia
             Set rngVisible = Nothing
         End If
         On Error GoTo 0
-    End If
 
-    If Not rngVisible Is Nothing Then
-        For Each area In rngVisible.Areas
-            areaData = area.Value
-            If IsArray(areaData) Then
-                rowCount = UBound(areaData, 1) - LBound(areaData, 1) + 1
-                areaCols = UBound(areaData, 2) - LBound(areaData, 2) + 1
-
-                writeRows = 0
-                For r = 1 To rowCount
+        If Not rngVisible Is Nothing Then
+            For Each area In rngVisible.Areas
+                For Each rowRange In area.Rows
+                    rowVals = rowRange.Value
                     rowHasData = False
-                    For c = 1 To areaCols
-                        If HasContent(areaData(r, c)) Then
-                            rowHasData = True
-                            Exit For
-                        End If
-                    Next c
-                    If rowHasData Then writeRows = writeRows + 1
-                Next r
 
-                If writeRows > 0 Then
-                    ReDim outArr(1 To writeRows, 1 To areaCols)
-                    writeRows = 0
-                    For r = 1 To rowCount
-                        rowHasData = False
-                        For c = 1 To areaCols
-                            If HasContent(areaData(r, c)) Then
+                    If IsArray(rowVals) Then
+                        lbRow = LBound(rowVals, 1)
+                        lbCol = LBound(rowVals, 2)
+                        arrRows = UBound(rowVals, 1) - lbRow + 1
+                        arrCols = UBound(rowVals, 2) - lbCol + 1
+
+                        For relCol = 0 To arrCols - 1
+                            If HasContent(rowVals(lbRow, lbCol + relCol)) Then
                                 rowHasData = True
                                 Exit For
                             End If
-                        Next c
-                        If rowHasData Then
-                            writeRows = writeRows + 1
-                            For c = 1 To areaCols
-                                outArr(writeRows, c) = areaData(r, c)
-                            Next c
-                        End If
-                    Next r
+                        Next relCol
 
-                    ws.Cells(destRow, 1).Resize(writeRows, areaCols).Value = outArr
-                    destRow = destRow + writeRows
-                    wroteData = True
-                End If
-            Else
-                If HasContent(areaData) Then
-                    ws.Cells(destRow, 1).Value = areaData
-                    destRow = destRow + 1
-                    wroteData = True
-                End If
-            End If
-        Next area
+                        If rowHasData Then
+                            If arrCols <> colCount Then
+                                ReDim normalized(1 To arrRows, 1 To colCount)
+                                For rr = 1 To arrRows
+                                    For relCol = 1 To colCount
+                                        If relCol <= arrCols Then
+                                            normalized(rr, relCol) = rowVals(lbRow + rr - 1, lbCol + relCol - 1)
+                                        Else
+                                            normalized(rr, relCol) = Empty
+                                        End If
+                                    Next relCol
+                                Next rr
+                                ws.Cells(destRow, firstCol).Resize(arrRows, colCount).Value = normalized
+                            Else
+                                ws.Cells(destRow, firstCol).Resize(arrRows, arrCols).Value = rowVals
+                            End If
+                            destRow = destRow + arrRows
+                        End If
+                    Else
+                        rowHasData = HasContent(rowVals)
+                        If rowHasData Then
+                            ws.Cells(destRow, firstCol).Value = rowVals
+                            If colCount > 1 Then
+                                ws.Cells(destRow, firstCol + 1).Resize(1, colCount - 1).ClearContents
+                            End If
+                            destRow = destRow + 1
+                        End If
+                    End If
+                Next rowRange
+            Next area
+        End If
+    Else
+        origRowCount = 0
+    End If
+
+    If origRowCount > 0 Then
+        originalLastRow = headerRow + origRowCount
+        If destRow <= originalLastRow Then
+            ws.Range(ws.Cells(destRow, firstCol), ws.Cells(originalLastRow, lastCol)).ClearContents
+        End If
     End If
 
     ' Rebuild table cleanly
@@ -1611,6 +1630,9 @@ Private Function UnionKeys(ByVal d1 As Object, _
 
     Set UnionKeys = u
 End Function
+
+
+
 
 
 
