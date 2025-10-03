@@ -283,7 +283,11 @@ Private Sub FilterAllFundCriteria(ByRef lo As ListObject, ByVal keepBUs As Varia
     Dim buCol As Long: buCol = GetColumnIndex(lo, "Business Unit")
     Dim revCol As Long: revCol = GetColumnIndex(lo, "Review Status")
     Dim rngVisible As Range
-    Dim tmp As Worksheet
+    Dim headers As Variant
+    Dim colCount As Long
+    Dim destRow As Long
+    Dim area As Range
+    Dim hasBody As Boolean
     Dim loIt As ListObject
 
     If buCol = 0 Then Err.Raise vbObjectError + 1101, , "Column 'Business Unit' not found."
@@ -294,20 +298,38 @@ Private Sub FilterAllFundCriteria(ByRef lo As ListObject, ByVal keepBUs As Varia
     lo.Range.AutoFilter Field:=revCol, Criteria1:=keepReviewStatus, Operator:=xlFilterValues
     On Error GoTo 0
 
-    On Error Resume Next
-    Set rngVisible = lo.Range.SpecialCells(xlCellTypeVisible)
-    If Err.Number <> 0 Then
-        Err.Clear
-        ws.Cells.Clear
-        ws.Range("A1").Resize(1, lo.HeaderRowRange.Columns.Count).Value = lo.HeaderRowRange.Value
+    headers = lo.HeaderRowRange.Value
+    colCount = lo.ListColumns.Count
+    hasBody = Not lo.DataBodyRange Is Nothing
+
+    If hasBody Then
+        On Error Resume Next
+        Set rngVisible = lo.DataBodyRange.SpecialCells(xlCellTypeVisible)
+        If Err.Number <> 0 Then
+            Err.Clear
+            Set rngVisible = Nothing
+        End If
+        On Error GoTo 0
     Else
-        Set tmp = ws.Parent.Worksheets.Add(After:=ws)
-        rngVisible.Copy tmp.Range("A1")
-        ws.Cells.Clear
-        tmp.UsedRange.Copy ws.Range("A1")
-        SafeDeleteSheet tmp
+        Set rngVisible = Nothing
     End If
-    On Error GoTo 0
+
+    ws.Range("A1").Resize(1, colCount).Value = headers
+    destRow = 2
+
+    If Not rngVisible Is Nothing Then
+        For Each area In rngVisible.Areas
+            ws.Cells(destRow, 1).Resize(area.Rows.Count, colCount).Value = area.Value
+            destRow = destRow + area.Rows.Count
+        Next area
+    End If
+
+    If destRow <= ws.Rows.Count Then
+        ws.Range(ws.Cells(destRow, 1), ws.Cells(ws.Rows.Count, colCount)).ClearContents
+    End If
+    If colCount < ws.Columns.Count Then
+        ws.Range(ws.Cells(1, colCount + 1), ws.Cells(ws.Rows.Count, ws.Columns.Count)).ClearContents
+    End If
 
     ' Rebuild table cleanly
     If ws.ListObjects.Count > 0 Then
@@ -1519,3 +1541,6 @@ Private Function UnionKeys(ByVal d1 As Object, _
 
     Set UnionKeys = u
 End Function
+
+
+
