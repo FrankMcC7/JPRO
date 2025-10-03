@@ -282,128 +282,71 @@ Private Sub FilterAllFundCriteria(ByRef lo As ListObject, ByVal keepBUs As Varia
     Dim ws As Worksheet: Set ws = lo.Parent
     Dim buCol As Long: buCol = GetColumnIndex(lo, "Business Unit")
     Dim revCol As Long: revCol = GetColumnIndex(lo, "Review Status")
-    Dim rngVisible As Range
     Dim colCount As Long
-    Dim destRow As Long
-    Dim area As Range
-    Dim headerArr As Variant
-    Dim loIt As ListObject
-    Dim c As Long
-    Dim headerVal As String
-    Dim firstCol As Long
     Dim headerRow As Long
+    Dim firstCol As Long
     Dim lastCol As Long
-    Dim origRowCount As Long
-    Dim originalLastRow As Long
-    Dim rowRange As Range
+    Dim headerArr As Variant
+    Dim destRow As Long
+    Dim dataRows As Range
+    Dim r As Long
     Dim rowVals As Variant
-    Dim rowHasData As Boolean
-    Dim lbRow As Long
-    Dim lbCol As Long
-    Dim arrRows As Long
-    Dim arrCols As Long
-    Dim relCol As Long
-    Dim rr As Long
-    Dim normalized As Variant
+    Dim loIt As ListObject
+    Dim lastSourceRow As Long
+    Dim keepBUSet As Object
+    Dim keepStatusSet As Object
+    Dim v As Variant
+    Dim buKey As String
+    Dim statusKey As String
 
     If buCol = 0 Then Err.Raise vbObjectError + 1101, , "Column 'Business Unit' not found."
     If revCol = 0 Then Err.Raise vbObjectError + 1102, , "Column 'Review Status' not found."
 
-    On Error Resume Next
-    lo.Range.AutoFilter Field:=buCol, Criteria1:=keepBUs, Operator:=xlFilterValues
-    lo.Range.AutoFilter Field:=revCol, Criteria1:=keepReviewStatus, Operator:=xlFilterValues
-    On Error GoTo 0
+    Set keepBUSet = CreateObject("Scripting.Dictionary")
+    For Each v In keepBUs
+        buKey = NormalizeBUKey(v)
+        If Len(buKey) > 0 Then
+            If Not keepBUSet.Exists(buKey) Then keepBUSet.Add buKey, True
+        End If
+    Next v
 
-    colCount = lo.HeaderRowRange.Columns.Count
-    If colCount = 0 Then Err.Raise vbObjectError + 1103, , "AllFund table has no columns."
+    Set keepStatusSet = CreateObject("Scripting.Dictionary")
+    For Each v In keepReviewStatus
+        statusKey = ProperStatus(v)
+        If Len(statusKey) > 0 Then
+            If Not keepStatusSet.Exists(statusKey) Then keepStatusSet.Add statusKey, True
+        End If
+    Next v
 
+    colCount = lo.ListColumns.Count
     headerRow = lo.HeaderRowRange.Row
     firstCol = lo.HeaderRowRange.Column
     lastCol = firstCol + colCount - 1
 
-    ReDim headerArr(1 To 1, 1 To colCount)
-    For c = 1 To colCount
-        headerVal = CStr(lo.HeaderRowRange.Cells(1, c).Value)
-        If LenB(headerVal) = 0 Then
-            headerArr(1, c) = lo.ListColumns(c).Name
-        Else
-            headerArr(1, c) = headerVal
-        End If
-    Next c
-    ws.Range(ws.Cells(headerRow, firstCol), ws.Cells(headerRow, lastCol)).Value = headerArr
+    headerArr = lo.HeaderRowRange.Value
+    ws.Cells(headerRow, firstCol).Resize(1, colCount).Value = headerArr
 
     destRow = headerRow + 1
+    Set dataRows = lo.DataBodyRange
 
-    If Not lo.DataBodyRange Is Nothing Then
-        origRowCount = lo.DataBodyRange.Rows.Count
-
-        On Error Resume Next
-        Set rngVisible = lo.DataBodyRange.SpecialCells(xlCellTypeVisible)
-        If Err.Number <> 0 Then
-            Err.Clear
-            Set rngVisible = Nothing
-        End If
-        On Error GoTo 0
-
-        If Not rngVisible Is Nothing Then
-            For Each area In rngVisible.Areas
-                For Each rowRange In area.Rows
-                    rowVals = rowRange.Value
-                    rowHasData = False
-
-                    If IsArray(rowVals) Then
-                        lbRow = LBound(rowVals, 1)
-                        lbCol = LBound(rowVals, 2)
-                        arrRows = UBound(rowVals, 1) - lbRow + 1
-                        arrCols = UBound(rowVals, 2) - lbCol + 1
-
-                        For relCol = 0 To arrCols - 1
-                            If HasContent(rowVals(lbRow, lbCol + relCol)) Then
-                                rowHasData = True
-                                Exit For
-                            End If
-                        Next relCol
-
-                        If rowHasData Then
-                            If arrCols <> colCount Then
-                                ReDim normalized(1 To arrRows, 1 To colCount)
-                                For rr = 1 To arrRows
-                                    For relCol = 1 To colCount
-                                        If relCol <= arrCols Then
-                                            normalized(rr, relCol) = rowVals(lbRow + rr - 1, lbCol + relCol - 1)
-                                        Else
-                                            normalized(rr, relCol) = Empty
-                                        End If
-                                    Next relCol
-                                Next rr
-                                ws.Cells(destRow, firstCol).Resize(arrRows, colCount).Value = normalized
-                            Else
-                                ws.Cells(destRow, firstCol).Resize(arrRows, arrCols).Value = rowVals
-                            End If
-                            destRow = destRow + arrRows
-                        End If
-                    Else
-                        rowHasData = HasContent(rowVals)
-                        If rowHasData Then
-                            ws.Cells(destRow, firstCol).Value = rowVals
-                            If colCount > 1 Then
-                                ws.Cells(destRow, firstCol + 1).Resize(1, colCount - 1).ClearContents
-                            End If
-                            destRow = destRow + 1
-                        End If
-                    End If
-                Next rowRange
-            Next area
-        End If
-    Else
-        origRowCount = 0
+    If Not dataRows Is Nothing Then
+        For r = 1 To dataRows.Rows.Count
+            rowVals = dataRows.Rows(r).Value
+            If RowHasAnyContent(rowVals) Then
+                buKey = NormalizeBUKey(rowVals(1, buCol))
+                statusKey = ProperStatus(rowVals(1, revCol))
+                If keepBUSet.Exists(buKey) And keepStatusSet.Exists(statusKey) Then
+                    ws.Cells(destRow, firstCol).Resize(1, colCount).Value = rowVals
+                    destRow = destRow + 1
+                End If
+            End If
+        Next r
     End If
 
-    If origRowCount > 0 Then
-        originalLastRow = headerRow + origRowCount
-        If destRow <= originalLastRow Then
-            ws.Range(ws.Cells(destRow, firstCol), ws.Cells(originalLastRow, lastCol)).ClearContents
-        End If
+    lastSourceRow = headerRow
+    If Not dataRows Is Nothing Then lastSourceRow = headerRow + dataRows.Rows.Count
+    If destRow <= lastSourceRow Then
+        ws.Range(ws.Cells(destRow, firstCol), ws.Cells(lastSourceRow, lastCol)).ClearContents
     End If
 
     ' Rebuild table cleanly
@@ -427,6 +370,38 @@ Private Function HasContent(ByVal v As Variant) As Boolean
         Case Else
             HasContent = True
     End Select
+End Function
+
+Private Function RowHasAnyContent(ByVal rowVals As Variant) As Boolean
+    Dim c As Long
+    Dim lbRow As Long
+    Dim lbCol As Long
+    Dim ubCol As Long
+
+    If IsArray(rowVals) Then
+        lbRow = LBound(rowVals, 1)
+        lbCol = LBound(rowVals, 2)
+        ubCol = UBound(rowVals, 2)
+        For c = lbCol To ubCol
+            If HasContent(rowVals(lbRow, c)) Then
+                RowHasAnyContent = True
+                Exit Function
+            End If
+        Next c
+    Else
+        RowHasAnyContent = HasContent(rowVals)
+    End If
+End Function
+
+Private Function NormalizeBUKey(ByVal v As Variant) As String
+    Dim t As String
+    t = UCase$(Trim$(CStr(v)))
+    Do While InStr(t, "  ") > 0
+        t = Replace$(t, "  ", " ")
+    Loop
+    t = Replace$(t, "- ", "-")
+    t = Replace$(t, " -", "-")
+    NormalizeBUKey = t
 End Function
 
 '========================
@@ -1630,6 +1605,8 @@ Private Function UnionKeys(ByVal d1 As Object, _
 
     Set UnionKeys = u
 End Function
+
+
 
 
 
