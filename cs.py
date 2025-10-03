@@ -1,290 +1,167 @@
-import time
-import sys
+pip install pyautogui opencv-python pillow pywin32 pygetwindow
+
 import os
+import sys
+import time
 from datetime import datetime
-import traceback
-
-from pywinauto.application import Application
-from pywinauto import timings
-from pywinauto.findwindows import ElementNotFoundError
-from pywinauto.controls.uia_controls import EditWrapper, ButtonWrapper, MenuWrapper
-from pywinauto.keyboard import send_keys
-
-import win32com.client as win32
+import pyautogui as pag
+import pygetwindow as gw
 import pyperclip
+import win32com.client as win32
 
+# ================== USER SETTINGS ==================
+ASSETS_DIR = r"C:\dhinka\cs_assets"           # <- put your 4 PNGs here
+SAVE_DIR   = r"D:\Exports"                     # <- must exist
+BASE_NAME  = "CreditStudio_CoperExport"        # filename prefix
+CLIENT_IDS_DEFAULT = "ABC123,XYZ456"           # used if no CLI arg
 
-# ==== USER SETTINGS (EDIT THESE) ====
-# Comma-delimited list; you can also pass via CLI: python credit_studio_export.py "ID1,ID2,ID3"
-CLIENT_IDS = "ABC123,XYZ456"
-SAVE_DIR   = r"D:\Exports"            # Ensure this directory exists
-BASE_NAME  = "CreditStudio_CoperExport"  # Prefix for the saved file
-WINDOW_TITLE_RE = ".*Credit Studio.*" # Regex to match the app window title
-MENU_STUDIO_TOOLS = "Studio Tools"
-MENU_COUNTERPARTY_QUICK_UPDATE = "Counterparty Quick Update"
+# Image filenames (inside ASSETS_DIR)
+IMG_TASKBAR_ICON          = "taskbar_icon.png"
+IMG_CLIENT_LABEL          = "client_label.png"
+IMG_SEARCH_BUTTON         = "search_button.png"
+IMG_EXPORT_EXCEL_BUTTON   = "export_excel_button.png"
 
-# Control captions (may vary slightly in your build; adjust if needed)
-CLIENT_FIELD_LABEL_SUBSTR = "Client Name/ID"
-SEARCH_BUTTON_TEXT_SUBSTR = "Search"
-EXPORT_BUTTON_TEXT_SUBSTR = "Export to Excel"
+# Matching parameters
+FIND_RETRIES = 25
+FIND_INTERVAL_SEC = 0.4
+CONFIDENCE = 0.88        # 0.85–0.92 is typical when screenshots are clean
 
-# Timeouts
-ATTACH_TIMEOUT_SEC = 20
-DIALOG_TIMEOUT_SEC = 20
-EXCEL_ATTACH_TIMEOUT_SEC = 40
+# Safety/UX
+pag.PAUSE = 0.15         # small delay after each action
+pag.FAILSAFE = True      # move mouse to top-left to abort
+# ====================================================
 
+def die(msg: str, code: int = 1):
+    print(f"\n[ERROR] {msg}")
+    sys.exit(code)
 
-def ensure_dir(path: str):
-    if not os.path.isdir(path):
-        raise FileNotFoundError(f"Save directory does not exist: {path}")
+def ensure_path():
+    if not os.path.isdir(ASSETS_DIR):
+        die(f"Assets folder not found: {ASSETS_DIR}")
+    if not os.path.isdir(SAVE_DIR):
+        die(f"Save folder not found: {SAVE_DIR}")
 
+def image_path(name: str) -> str:
+    return os.path.join(ASSETS_DIR, name)
 
-def attach_credit_studio():
-    print("[i] Attaching to Credit Studio window...")
-    try:
-        app = Application(backend="uia").connect(title_re=WINDOW_TITLE_RE, timeout=ATTACH_TIMEOUT_SEC)
-        # If multiple windows match, pick the top-level active one
-        win = app.top_window()
-        win.set_focus()
-        print("[✓] Attached.")
-        return app, win
-    except Exception as e:
-        raise RuntimeError(f"Could not attach to Credit Studio window matching /{WINDOW_TITLE_RE}/. "
-                           f"Make sure it is open and visible. Error: {e}")
-
-
-def open_counterparty_quick_update(win):
-    """
-    Tries menu route first; if not a classic menu, uses Alt key navigation fallback.
-    """
-    print("[i] Opening 'Counterparty Quick Update' from 'Studio Tools'...")
-    try:
-        # Try to find a classic menu bar
-        menubars = win.descendants(control_type="MenuBar")
-        if menubars:
-            mb = MenuWrapper(menubars[0])
-            mb.select(f"{MENU_STUDIO_TOOLS}->{MENU_COUNTERPARTY_QUICK_UPDATE}")
-            print("[✓] Opened via menu bar.")
-            return
-    except Exception:
-        pass
-
-    # Try clickable menu items directly
-    try:
-        studio_tools = win.child_window(title=MENU_STUDIO_TOOLS, control_type="MenuItem")
-        studio_tools.click_input()
-        time.sleep(0.5)
-        cqu = win.child_window(title=MENU_COUNTERPARTY_QUICK_UPDATE, control_type="MenuItem")
-        cqu.click_input()
-        print("[✓] Opened via direct menu items.")
-        return
-    except Exception:
-        pass
-
-    # Fallback: keyboard navigation (adjust if your app uses different accelerators)
-    print("[!] Falling back to keyboard navigation. You may see the UI flash.")
-    win.set_focus()
-    send_keys("%")  # Activate menu
-    time.sleep(0.3)
-    # Try to type the menu text letters; adapt if your app uses accelerators
-    send_keys(MENU_STUDIO_TOOLS.replace(" ", "")[:1])  # First letter heuristic
-    time.sleep(0.3)
-    send_keys(MENU_COUNTERPARTY_QUICK_UPDATE.replace(" ", "")[:1])
-    time.sleep(1.0)
-    print("[~] If the dialog did not open, you may need to adjust menu navigation.")
-
-
-def get_child_by_partial_text(container, substr, control_type=None):
-    """
-    Find a child control whose name/title contains `substr` (case-insensitive).
-    Optionally filter by control_type.
-    """
-    substr_low = substr.lower()
-    for ctrl in container.descendants():
-        try:
-            name = (ctrl.window_text() or "").lower()
-            ctype = getattr(ctrl, "friendly_class_name", lambda: "")().lower()
-            if substr_low in name and (control_type is None or ctrl.element_info.control_type == control_type):
-                return ctrl
-        except Exception:
-            continue
+def find_on_screen(img_name: str, confidence=CONFIDENCE, retries=FIND_RETRIES):
+    path = image_path(img_name)
+    if not os.path.isfile(path):
+        die(f"Missing asset image: {path}")
+    for _ in range(retries):
+        box = pag.locateOnScreen(path, confidence=confidence, grayscale=True)
+        if box:
+            return box
+        time.sleep(FIND_INTERVAL_SEC)
     return None
 
+def click_center(img_name: str, click_times=1):
+    box = find_on_screen(img_name)
+    if not box:
+        die(f"Could not find '{img_name}' on screen. "
+            f"Check scaling=100%, app visible, and the screenshot accuracy.")
+    center = pag.center(box)
+    pag.moveTo(center.x, center.y, duration=0.1)
+    for _ in range(click_times):
+        pag.click()
+        time.sleep(0.15)
 
-def find_counterparty_window(app):
-    """
-    Heuristic: after opening the module, a new dialog/window appears.
-    We look for a new top-level window containing the expected field/button labels.
-    """
-    print("[i] Locating the 'Counterparty Quick Update' window...")
-    deadline = time.time() + DIALOG_TIMEOUT_SEC
-    while time.time() < deadline:
-        for w in app.windows():
-            title = w.window_text() or ""
-            if not title.strip():
-                continue
-            try:
-                # Check for presence of the expected field or buttons
-                if get_child_by_partial_text(w, CLIENT_FIELD_LABEL_SUBSTR) or \
-                   get_child_by_partial_text(w, SEARCH_BUTTON_TEXT_SUBSTR) or \
-                   get_child_by_partial_text(w, EXPORT_BUTTON_TEXT_SUBSTR):
-                    print(f"[✓] Found: '{title}'")
-                    return w
-            except Exception:
-                continue
-        time.sleep(0.5)
-    raise ElementNotFoundError("Could not find the Counterparty Quick Update dialog window.")
+def activate_credit_studio_by_taskbar():
+    """Click the taskbar icon (preferred, robust for OpenFin)."""
+    print("[i] Activating Credit Studio via taskbar icon…")
+    click_center(IMG_TASKBAR_ICON)
+    time.sleep(0.6)
 
-
-def fill_client_ids_and_search(cqu_win, client_ids_text):
-    print("[i] Filling Client Name/ID and clicking Search...")
-    # Find the edit box near the label or by name
-    edit_ctrl = None
-
-    # Try to get the Edit directly by label
-    labeled = get_child_by_partial_text(cqu_win, CLIENT_FIELD_LABEL_SUBSTR, control_type="Text")
-    if labeled:
-        # Often the Edit is a sibling or a next descendant
-        # Try immediate edit descendants first
-        for desc in cqu_win.descendants(control_type="Edit"):
-            # Heuristic: pick the first visible, enabled edit
-            try:
-                ew = EditWrapper(desc)
-                if ew.is_enabled() and ew.is_visible():
-                    edit_ctrl = ew
-                    break
-            except Exception:
-                continue
-
-    if not edit_ctrl:
-        # Fall back: first visible edit on the window
-        for desc in cqu_win.descendants(control_type="Edit"):
-            try:
-                ew = EditWrapper(desc)
-                if ew.is_enabled() and ew.is_visible():
-                    edit_ctrl = ew
-                    break
-            except Exception:
-                continue
-
-    if not edit_ctrl:
-        raise ElementNotFoundError("Client Name/ID edit box not found. Inspect control names and adjust selectors.")
-
-    # Set text via clipboard (more reliable on some custom controls)
-    pyperclip.copy(client_ids_text)
+    # Try maximize the active window just in case
     try:
-        edit_ctrl.set_focus()
-        edit_ctrl.select()  # highlight existing contents
+        win = gw.getActiveWindow()
+        if win and not win.isMaximized:
+            win.maximize()
     except Exception:
         pass
-    send_keys("^v")  # paste
-    time.sleep(0.3)
 
-    # Click Search
-    search_btn_el = get_child_by_partial_text(cqu_win, SEARCH_BUTTON_TEXT_SUBSTR, control_type="Button")
-    if not search_btn_el:
-        # try any button that has 'Search' in automation id/name
-        for desc in cqu_win.descendants(control_type="Button"):
-            try:
-                bw = ButtonWrapper(desc)
-                if "search" in (bw.window_text() or "").lower():
-                    search_btn_el = desc
-                    break
-            except Exception:
-                continue
+def paste_text(text: str):
+    pyperclip.copy(text)
+    pag.hotkey('ctrl', 'v')
 
-    if not search_btn_el:
-        raise ElementNotFoundError("Search button not found. Adjust SEARCH_BUTTON_TEXT_SUBSTR or use Inspect.exe.")
-    ButtonWrapper(search_btn_el).click_input()
-    print("[✓] Search clicked.")
-    time.sleep(1.0)  # give results time to populate
-
-
-def export_to_excel(cqu_win):
-    print("[i] Clicking 'Export to Excel'...")
-    export_el = get_child_by_partial_text(cqu_win, EXPORT_BUTTON_TEXT_SUBSTR, control_type="Button")
-    if not export_el:
-        # Try any button containing 'Export'
-        for desc in cqu_win.descendants(control_type="Button"):
-            try:
-                bw = ButtonWrapper(desc)
-                label = (bw.window_text() or "").lower()
-                if "export" in label and "excel" in label:
-                    export_el = desc
-                    break
-            except Exception:
-                continue
-
-    if not export_el:
-        raise ElementNotFoundError("Export to Excel button not found. Adjust EXPORT_BUTTON_TEXT_SUBSTR or selectors.")
-    ButtonWrapper(export_el).click_input()
-    print("[✓] Export clicked. Waiting for Excel to open...")
-    time.sleep(2.0)
-
-
-def find_excel_instance(timeout_sec=EXCEL_ATTACH_TIMEOUT_SEC):
-    print("[i] Waiting for Excel instance/workbook...")
-    deadline = time.time() + timeout_sec
+def wait_for_excel_and_save(save_dir: str, base_name: str, timeout_sec: int = 60) -> str:
+    """Attach to Excel and save the active workbook as xlsx."""
+    print("[i] Waiting for Excel workbook to open…")
+    t0 = time.time()
     excel = None
-    while time.time() < deadline:
+    while time.time() - t0 < timeout_sec:
         try:
             excel = win32.GetObject(Class="Excel.Application")
-            if excel is not None:
-                # Ensure at least one workbook opened
-                if excel.Workbooks.Count >= 1:
-                    return excel
+            if excel and excel.Workbooks.Count >= 1:
+                break
         except Exception:
             pass
         time.sleep(1.0)
-    raise TimeoutError("Excel did not open the export within expected time.")
 
+    if not excel:
+        die("Excel did not open the exported workbook within the timeout.")
 
-def save_active_workbook(excel, save_dir, base_name):
-    ensure_dir(save_dir)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     full_path = os.path.join(save_dir, f"{base_name}_{ts}.xlsx")
 
     wb = excel.ActiveWorkbook
     if wb is None:
-        raise RuntimeError("No ActiveWorkbook in Excel. Check if export actually opened a workbook.")
-
+        die("Excel ActiveWorkbook is None. Is the export actually opening a workbook?")
     print(f"[i] Saving workbook to: {full_path}")
-    # 51 = xlOpenXMLWorkbook (.xlsx), 56 would be .xls
+    # 51 = xlOpenXMLWorkbook (.xlsx)
     wb.SaveAs(full_path, FileFormat=51)
-    print("[✓] Saved.")
+    print("[✓] Excel save complete.")
     return full_path
 
-
 def main():
-    # Allow client IDs via CLI arg override
-    client_ids_text = CLIENT_IDS
+    ensure_path()
+
+    # Take COPER IDs from CLI if provided
+    client_ids = CLIENT_IDS_DEFAULT
     if len(sys.argv) >= 2 and sys.argv[1].strip():
-        client_ids_text = sys.argv[1].strip()
+        client_ids = sys.argv[1].strip()
+    print(f"[i] Using Client IDs: {client_ids}")
 
-    print(f"[i] Using Client IDs: {client_ids_text}")
+    # Bring Credit Studio to front
+    activate_credit_studio_by_taskbar()
 
-    app, main_win = attach_credit_studio()
-    open_counterparty_quick_update(main_win)
+    # 1) Focus the Client Name/ID input
+    # Strategy: click near the label, then TAB or click into the nearest input.
+    print("[i] Locating 'Client Name/ID' label…")
+    label_box = find_on_screen(IMG_CLIENT_LABEL)
+    if not label_box:
+        die("Could not find the Client Name/ID label on screen.")
+    # Heuristic: textbox is usually to the right of label; click at label.right + offset
+    x = label_box.left + label_box.width + 120
+    y = label_box.top + label_box.height // 2
+    pag.moveTo(x, y, duration=0.1)
+    pag.click()
+    time.sleep(0.15)
 
-    # Find the dialog that contains our fields
-    cqu_win = find_counterparty_window(app)
-    cqu_win.set_focus()
+    # 2) Paste the IDs
+    paste_text(client_ids)
+    time.sleep(0.2)
 
-    fill_client_ids_and_search(cqu_win, client_ids_text)
-    export_to_excel(cqu_win)
+    # 3) Click Search
+    print("[i] Clicking Search…")
+    click_center(IMG_SEARCH_BUTTON)
+    time.sleep(1.2)  # wait for results grid to fill
 
-    excel = find_excel_instance()
-    saved_path = save_active_workbook(excel, SAVE_DIR, BASE_NAME)
+    # 4) Click Export to Excel
+    print("[i] Clicking Export to Excel…")
+    click_center(IMG_EXPORT_EXCEL_BUTTON)
+    time.sleep(2.0)  # give Excel time to spin up
 
-    print(f"[✓] DONE. File saved at: {saved_path}")
-
+    # 5) Save via Excel COM
+    saved = wait_for_excel_and_save(SAVE_DIR, BASE_NAME)
+    print(f"[✓] DONE. File saved at: {saved}")
 
 if __name__ == "__main__":
     try:
         main()
+    except KeyboardInterrupt:
+        print("\n[!] Aborted by user (Ctrl+C).")
     except Exception as e:
         print("\n[ERROR]")
         print(str(e))
-        print("\n[TRACEBACK]")
-        traceback.print_exc()
-        sys.exit(1)
+        raise
