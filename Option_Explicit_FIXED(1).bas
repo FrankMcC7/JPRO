@@ -283,12 +283,21 @@ Private Sub FilterAllFundCriteria(ByRef lo As ListObject, ByVal keepBUs As Varia
     Dim buCol As Long: buCol = GetColumnIndex(lo, "Business Unit")
     Dim revCol As Long: revCol = GetColumnIndex(lo, "Review Status")
     Dim rngVisible As Range
-    Dim headers As Variant
     Dim colCount As Long
     Dim destRow As Long
     Dim area As Range
-    Dim hasBody As Boolean
+    Dim areaData As Variant
+    Dim headerArr As Variant
     Dim loIt As ListObject
+    Dim rowCount As Long
+    Dim areaCols As Long
+    Dim r As Long
+    Dim c As Long
+    Dim writeRows As Long
+    Dim outArr As Variant
+    Dim rowHasData As Boolean
+    Dim wroteData As Boolean
+    Dim headerVal As String
 
     If buCol = 0 Then Err.Raise vbObjectError + 1101, , "Column 'Business Unit' not found."
     If revCol = 0 Then Err.Raise vbObjectError + 1102, , "Column 'Review Status' not found."
@@ -298,11 +307,25 @@ Private Sub FilterAllFundCriteria(ByRef lo As ListObject, ByVal keepBUs As Varia
     lo.Range.AutoFilter Field:=revCol, Criteria1:=keepReviewStatus, Operator:=xlFilterValues
     On Error GoTo 0
 
-    headers = lo.HeaderRowRange.Value
-    colCount = lo.ListColumns.Count
-    hasBody = Not lo.DataBodyRange Is Nothing
+    colCount = lo.HeaderRowRange.Columns.Count
+    If colCount = 0 Then Err.Raise vbObjectError + 1103, , "AllFund table has no columns."
 
-    If hasBody Then
+    ReDim headerArr(1 To 1, 1 To colCount)
+    For c = 1 To colCount
+        headerVal = CStr(lo.HeaderRowRange.Cells(1, c).Value)
+        If LenB(headerVal) = 0 Then
+            headerArr(1, c) = lo.ListColumns(c).Name
+        Else
+            headerArr(1, c) = headerVal
+        End If
+    Next c
+
+    ws.Cells.Clear
+    ws.Range("A1").Resize(1, colCount).Value = headerArr
+    destRow = 2
+    wroteData = False
+
+    If Not lo.DataBodyRange Is Nothing Then
         On Error Resume Next
         Set rngVisible = lo.DataBodyRange.SpecialCells(xlCellTypeVisible)
         If Err.Number <> 0 Then
@@ -310,25 +333,58 @@ Private Sub FilterAllFundCriteria(ByRef lo As ListObject, ByVal keepBUs As Varia
             Set rngVisible = Nothing
         End If
         On Error GoTo 0
-    Else
-        Set rngVisible = Nothing
     End If
-
-    ws.Range("A1").Resize(1, colCount).Value = headers
-    destRow = 2
 
     If Not rngVisible Is Nothing Then
         For Each area In rngVisible.Areas
-            ws.Cells(destRow, 1).Resize(area.Rows.Count, colCount).Value = area.Value
-            destRow = destRow + area.Rows.Count
-        Next area
-    End If
+            areaData = area.Value
+            If IsArray(areaData) Then
+                rowCount = UBound(areaData, 1) - LBound(areaData, 1) + 1
+                areaCols = UBound(areaData, 2) - LBound(areaData, 2) + 1
 
-    If destRow <= ws.Rows.Count Then
-        ws.Range(ws.Cells(destRow, 1), ws.Cells(ws.Rows.Count, colCount)).ClearContents
-    End If
-    If colCount < ws.Columns.Count Then
-        ws.Range(ws.Cells(1, colCount + 1), ws.Cells(ws.Rows.Count, ws.Columns.Count)).ClearContents
+                writeRows = 0
+                For r = 1 To rowCount
+                    rowHasData = False
+                    For c = 1 To areaCols
+                        If HasContent(areaData(r, c)) Then
+                            rowHasData = True
+                            Exit For
+                        End If
+                    Next c
+                    If rowHasData Then writeRows = writeRows + 1
+                Next r
+
+                If writeRows > 0 Then
+                    ReDim outArr(1 To writeRows, 1 To areaCols)
+                    writeRows = 0
+                    For r = 1 To rowCount
+                        rowHasData = False
+                        For c = 1 To areaCols
+                            If HasContent(areaData(r, c)) Then
+                                rowHasData = True
+                                Exit For
+                            End If
+                        Next c
+                        If rowHasData Then
+                            writeRows = writeRows + 1
+                            For c = 1 To areaCols
+                                outArr(writeRows, c) = areaData(r, c)
+                            Next c
+                        End If
+                    Next r
+
+                    ws.Cells(destRow, 1).Resize(writeRows, areaCols).Value = outArr
+                    destRow = destRow + writeRows
+                    wroteData = True
+                End If
+            Else
+                If HasContent(areaData) Then
+                    ws.Cells(destRow, 1).Value = areaData
+                    destRow = destRow + 1
+                    wroteData = True
+                End If
+            End If
+        Next area
     End If
 
     ' Rebuild table cleanly
@@ -339,6 +395,20 @@ Private Sub FilterAllFundCriteria(ByRef lo As ListObject, ByVal keepBUs As Varia
     End If
     Set lo = EnsureTable(ws, "AllFundTbl")
 End Sub
+
+Private Function HasContent(ByVal v As Variant) As Boolean
+    Dim s As String
+    Select Case VarType(v)
+        Case vbEmpty, vbNull
+            HasContent = False
+        Case vbString
+            s = Replace$(CStr(v), Chr$(160), "")
+            s = Trim$(s)
+            HasContent = (LenB(s) > 0)
+        Case Else
+            HasContent = True
+    End Select
+End Function
 
 '========================
 ' Remove blank CoR rows & export region files (ALL columns)
@@ -1541,6 +1611,9 @@ Private Function UnionKeys(ByVal d1 As Object, _
 
     Set UnionKeys = u
 End Function
+
+
+
 
 
 
