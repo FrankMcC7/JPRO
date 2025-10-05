@@ -1,5 +1,6 @@
-﻿import math
+import math
 import sys
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Set, Tuple
@@ -12,7 +13,6 @@ except ImportError as exc:
     raise SystemExit(
         "The 'xlsxwriter' package is required. Install it with 'pip install xlsxwriter' and rerun this script."
     ) from exc
-
 ALLOWED_BUSINESS_UNITS: Dict[str, Tuple[str, str]] = {
     "FI-US": ("FI-US", "AMRS"),
     "FI-EMEA": ("Fi-EMEA", "EMEA"),
@@ -24,10 +24,8 @@ REVIEW_STATUS_ORDER = ["Approved", "Submitted"]
 BUSINESS_UNIT_LOOKUP = {key.upper(): value for key, value in ALLOWED_BUSINESS_UNITS.items()}
 COUNTRY_OF_RISK_COL = "Country Of Risk"
 
-
 def ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
-
 
 def sanitize_sheet_name(name: str) -> str:
     invalid = set('[]:*?/\\')
@@ -35,7 +33,6 @@ def sanitize_sheet_name(name: str) -> str:
     if not cleaned:
         cleaned = "Sheet"
     return cleaned[:31]
-
 
 def make_unique_sheet_name(name: str, used: Set[str]) -> str:
     base = sanitize_sheet_name(name)
@@ -52,7 +49,6 @@ def make_unique_sheet_name(name: str, used: Set[str]) -> str:
     used.add(candidate)
     return candidate
 
-
 def auto_fit_columns(worksheet, df: pd.DataFrame) -> None:
     for idx, column in enumerate(df.columns):
         series = df[column].astype(str)
@@ -60,7 +56,6 @@ def auto_fit_columns(worksheet, df: pd.DataFrame) -> None:
         max_len = max(lengths, default=0)
         max_len = max(max_len, len(str(column)))
         worksheet.set_column(idx, idx, min(max_len + 2, 60))
-
 
 def join_ids_for_output(values: List[str]) -> str:
     seen: Set[str] = set()
@@ -72,7 +67,6 @@ def join_ids_for_output(values: List[str]) -> str:
         seen.add(value)
         ordered.append(value)
     return ",".join(ordered)
-
 
 def standardize_columns(
     df: pd.DataFrame, required: Dict[str, Sequence[str]], context: str
@@ -101,6 +95,20 @@ def standardize_columns(
         df = df.rename(columns=rename_map)
     return df
 
+def copy_to_clipboard(text: str) -> bool:
+    try:
+        subprocess.run(["clip"], input=text, text=True, check=True)
+        return True
+    except Exception as exc:
+        print(f"[Warning] Unable to copy batch to clipboard automatically: {exc}")
+        return False
+
+def write_batch_to_file(batch_number: int, text: str, config: "Config") -> Path:
+    batches_dir = config.all_funds_csv.with_name(f"{config.all_funds_csv.stem}_coper_batches")
+    ensure_directory(batches_dir)
+    batch_path = batches_dir / f"batch_{batch_number:03d}.txt"
+    batch_path.write_text(text, encoding="utf-8")
+    return batch_path
 
 def save_excel_with_tables(
     path: Path, sheets: Sequence[Tuple[str, pd.DataFrame]]
@@ -134,11 +142,9 @@ def save_excel_with_tables(
             worksheet.autofilter(0, 0, last_row, last_col)
             auto_fit_columns(worksheet, df_to_write)
 
-
 class StatsTracker:
     def __init__(self) -> None:
         self.tables: Dict[str, pd.DataFrame] = {}
-
     def set_region_summary(
         self, totals: pd.Series, blanks: pd.Series
     ) -> None:
@@ -154,7 +160,6 @@ class StatsTracker:
                 }
             )
         self.tables["Region Summary"] = pd.DataFrame(rows)
-
     def set_credit_coverage(
         self,
         region_present: pd.Series,
@@ -174,7 +179,6 @@ class StatsTracker:
                 }
             )
         self.tables["Credit Studio Coverage (Region)"] = pd.DataFrame(region_rows)
-
         review_present_map = {k: int(v) for k, v in review_present.to_dict().items()}
         review_missing_map = {k: int(v) for k, v in review_missing.to_dict().items()}
         review_rows = []
@@ -187,7 +191,6 @@ class StatsTracker:
                 }
             )
         self.tables["Credit Studio Coverage (Review)"] = pd.DataFrame(review_rows)
-
     def set_country_match(
         self,
         region_match: pd.Series,
@@ -207,7 +210,6 @@ class StatsTracker:
                 }
             )
         self.tables["Country of Risk Match (Region)"] = pd.DataFrame(region_rows)
-
         review_match_map = {k: int(v) for k, v in review_match.to_dict().items()}
         review_mismatch_map = {
             k: int(v) for k, v in review_mismatch.to_dict().items()
@@ -222,60 +224,50 @@ class StatsTracker:
                 }
             )
         self.tables["Country of Risk Match (Review)"] = pd.DataFrame(review_rows)
-
     def export(self, path: Path) -> None:
         save_excel_with_tables(
             path,
             [(name, df.copy()) for name, df in self.tables.items()],
         )
-
-
 @dataclass
+
 class Config:
     all_funds_csv: Path = Path(r"D:\path\to\AllFunds.csv")
     extracted_data_dir: Path = Path(r"D:\path\to\credit_studio_exports")
     keys_workbook: Path = Path(r"D:\path\to\keys.xlsx")
     batch_size: int = 600
-
     def __post_init__(self) -> None:
         self.all_funds_csv = Path(self.all_funds_csv)
         self.extracted_data_dir = Path(self.extracted_data_dir)
         self.keys_workbook = Path(self.keys_workbook)
-
     @property
     def cleaned_output(self) -> Path:
         return self.all_funds_csv.with_name(f"{self.all_funds_csv.stem}_cleaned.xlsx")
-
     @property
     def blank_country_output(self) -> Path:
         return self.all_funds_csv.with_name(
             f"{self.all_funds_csv.stem}_blank_country_by_region.xlsx"
         )
-
     @property
     def stats_output(self) -> Path:
         return self.all_funds_csv.with_name(
             f"{self.all_funds_csv.stem}_processing_stats.xlsx"
         )
-
     @property
     def combined_credit_output(self) -> Path:
         return self.all_funds_csv.with_name(
             f"{self.all_funds_csv.stem}_credit_studio_combined.xlsx"
         )
-
     @property
     def missing_copers_output(self) -> Path:
         return self.all_funds_csv.with_name(
             f"{self.all_funds_csv.stem}_missing_copers.xlsx"
         )
-
     @property
     def corrections_output(self) -> Path:
         return self.all_funds_csv.with_name(
             f"{self.all_funds_csv.stem}_country_of_risk_corrections.xlsx"
         )
-
 
 def load_and_clean_all_funds(config: Config) -> pd.DataFrame:
     if not config.all_funds_csv.exists():
@@ -333,13 +325,11 @@ def load_and_clean_all_funds(config: Config) -> pd.DataFrame:
     )
     return df
 
-
 def create_cleaned_workbook(df: pd.DataFrame, config: Config) -> None:
     save_excel_with_tables(
         config.cleaned_output, [("All Funds (Cleaned)", df)]
     )
     print(f"Cleaned All Funds workbook saved to {config.cleaned_output}.")
-
 
 def generate_blank_country_workbook(
     df: pd.DataFrame, config: Config
@@ -352,7 +342,6 @@ def generate_blank_country_workbook(
         sheets.append((region, region_df))
     save_excel_with_tables(config.blank_country_output, sheets)
     if blank_df.empty:
-
         print(
             "No blank Country of Risk rows detected; workbook contains empty tables for traceability."
         )
@@ -362,7 +351,6 @@ def generate_blank_country_workbook(
             f"({len(blank_df)} rows)."
         )
     return blank_df
-
 
 def deliver_coper_batches(df: pd.DataFrame, config: Config) -> None:
     coper_series = df["Fund CoPER"].astype(str).str.strip()
@@ -378,20 +366,25 @@ def deliver_coper_batches(df: pd.DataFrame, config: Config) -> None:
         f"(total batches: {total_batches})."
     )
     for batch_index in range(total_batches):
-        start = batch_index * batch_size
-        end = min(start + batch_size, total_ids)
-        batch = unique_copers[start:end]
+        start_pos = batch_index * batch_size
+        end_pos = min(start_pos + batch_size, total_ids)
+        batch_number = batch_index + 1
+        batch = unique_copers[start_pos:end_pos]
         batch_text = ",".join(batch)
+        batch_path = write_batch_to_file(batch_number, batch_text, config)
+        copied = copy_to_clipboard(batch_text)
         print("\n" + "=" * 72)
         print(
-            f"Batch {batch_index + 1} of {total_batches} "
-            f"({end - start} IDs • {end}/{total_ids} processed)"
+            f"Batch {batch_number} of {total_batches} "
+            f"({end_pos - start_pos} IDs, {end_pos}/{total_ids} processed)"
         )
-        print("-" * 72)
-        print(batch_text)
-        print("-" * 72)
+        if copied:
+            print(f"IDs copied to clipboard. Backup file: {batch_path}")
+        else:
+            print("[Warning] Clipboard copy unavailable.")
+            print(f"Copy the comma-delimited IDs from: {batch_path}")
         input(
-            "Copy the comma-delimited IDs above, trigger the exposure extract, "
+            "Paste the IDs into Credit Studio, trigger the extract, "
             "then press Enter for the next batch..."
         )
     while True:
@@ -421,14 +414,12 @@ def read_credit_exports(extracted_dir: Path) -> Tuple[pd.DataFrame, List[Path]]:
     combined = combined.fillna("")
     return combined, xlsx_files
 
-
 def select_first_25_columns(df: pd.DataFrame) -> pd.DataFrame:
     columns = df.columns.tolist()
     if "PMA" in columns:
         idx = columns.index("PMA")
         return df.iloc[:, : idx + 1]
     return df.iloc[:, : min(25, len(columns))]
-
 
 def combine_credit_exports(
     clean_df: pd.DataFrame, config: Config, stats: StatsTracker
@@ -533,7 +524,6 @@ def combine_credit_exports(
             print("Continuing with incomplete Credit Studio coverage.")
             return unique_credit
 
-
 def load_keys_table(keys_path: Path) -> pd.DataFrame:
     if not keys_path.exists():
         raise FileNotFoundError(
@@ -564,7 +554,6 @@ def load_keys_table(keys_path: Path) -> pd.DataFrame:
         "Could not find 'All Funds' and 'Credit Studio' columns in the keys workbook."
     )
 
-
 def build_normalization_map(keys_df: pd.DataFrame) -> Dict[str, Set[str]]:
     mapping: Dict[str, Set[str]] = {}
     for all_value, credit_value in keys_df[["All Funds", "Credit Studio"]].itertuples(
@@ -576,7 +565,6 @@ def build_normalization_map(keys_df: pd.DataFrame) -> Dict[str, Set[str]]:
             continue
         mapping.setdefault(all_norm, set()).add(credit_norm)
     return mapping
-
 
 def countries_equal(
     all_value: str, credit_value: str, mapping: Dict[str, Set[str]]
@@ -590,7 +578,6 @@ def countries_equal(
     if all_key in mapping:
         return credit_key in mapping[all_key]
     return all_key == credit_key
-
 
 def match_country_of_risk(
     clean_df: pd.DataFrame,
@@ -651,7 +638,6 @@ def match_country_of_risk(
     review_mismatch = merged[~merged["Country Match"]]["Review Status"].value_counts()
     stats.set_country_match(region_match, region_mismatch, review_match, review_mismatch)
     stats.export(config.stats_output)
-
     correction_rows = merged[
         (~merged["Country Match"])
         & (merged[f"{COUNTRY_OF_RISK_COL} (Credit Studio)"] != "")
@@ -682,7 +668,6 @@ def match_country_of_risk(
         )
     return merged
 
-
 def main() -> None:
     config = Config()
     stats = StatsTracker()
@@ -709,8 +694,6 @@ def main() -> None:
     for path in outputs:
         status = "available" if path.exists() else "not generated in this run"
         print(f" - {path} ({status})")
-
-
 if __name__ == "__main__":
     try:
         main()
