@@ -110,6 +110,23 @@ def write_batch_to_file(batch_number: int, text: str, config: "Config") -> Path:
     batch_path.write_text(text, encoding="utf-8")
     return batch_path
 
+def trim_to_product_list(df: pd.DataFrame) -> pd.DataFrame:
+    columns = list(df.columns)
+    if "Product List" in df.columns:
+        boundary = df.columns.get_loc("Product List")
+        keep_cols = columns[: boundary + 1]
+    else:
+        keep_cols = columns[: min(31, len(columns))]
+    if "Region" in columns and "Region" not in keep_cols:
+        if "Business Unit" in keep_cols:
+            insert_at = keep_cols.index("Business Unit") + 1
+            keep_cols.insert(insert_at, "Region")
+        else:
+            keep_cols.append("Region")
+    keep_cols = list(dict.fromkeys(keep_cols))
+    return df.loc[:, keep_cols].copy()
+
+
 def save_excel_with_tables(
     path: Path, sheets: Sequence[Tuple[str, pd.DataFrame]]
 ) -> None:
@@ -318,6 +335,7 @@ def load_and_clean_all_funds(config: Config) -> pd.DataFrame:
     bu_index = df.columns.get_loc("Business Unit") + 1
     region_series = df.pop("Region")
     df.insert(bu_index, "Region", region_series)
+    df = trim_to_product_list(df)
     df = df.reset_index(drop=True)
     cleaned_rows = len(df)
     print(
@@ -375,6 +393,8 @@ def deliver_coper_batches(df: pd.DataFrame, config: Config) -> None:
         batch_text = ",".join(batch)
         batch_path = write_batch_to_file(batch_number, batch_text, config)
         copied = copy_to_clipboard(batch_text)
+        if len(batch_text) > 32000:
+            print(f"[Notice] This batch string is {len(batch_text)} characters long. Excel cells accept up to 32,767 characters; if pasting fails, lower the batch size.")
         processed = end_pos
         remaining = total_ids - processed
         status = "copied to clipboard" if copied else "copy failed"
@@ -699,4 +719,5 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"\n[Error] {exc}", file=sys.stderr)
         sys.exit(1)
+
 
