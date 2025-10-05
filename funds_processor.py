@@ -68,6 +68,9 @@ def join_ids_for_output(values: List[str]) -> str:
         ordered.append(value)
     return ",".join(ordered)
 
+def join_unique_strings(values: List[str]) -> str:
+    return join_ids_for_output(values)
+
 def standardize_columns(
     df: pd.DataFrame, required: Dict[str, Sequence[str]], context: str
 ) -> pd.DataFrame:
@@ -659,18 +662,23 @@ def match_country_of_risk(
     ].copy()
     correction_groups = []
     label_column = f"{COUNTRY_OF_RISK_COL} (All Funds)"
+    region_col = "Region"
     if not correction_rows.empty:
-        grouped = correction_rows.groupby(label_column)["Fund CoPER"]
-        for label, series in grouped:
+        grouped = correction_rows.groupby(label_column)
+        for label, group in grouped:
+            label_value = "" if pd.isna(label) else str(label).strip()
+            if not label_value:
+                label_value = "(Blank)"
             correction_groups.append(
                 {
-                    label_column: label,
-                    "Fund CoPER IDs": join_ids_for_output(series.tolist()),
+                    label_column: label_value,
+                    "Regions": join_unique_strings(group[region_col].dropna().astype(str).tolist()),
+                    "Fund CoPER IDs": join_ids_for_output(group["Fund CoPER"].astype(str).tolist()),
                 }
             )
     corrections_df = pd.DataFrame(correction_groups)
     if corrections_df.empty:
-        corrections_df = pd.DataFrame(columns=[label_column, "Fund CoPER IDs"])
+        corrections_df = pd.DataFrame(columns=[label_column, "Regions", "Fund CoPER IDs"])
     save_excel_with_tables(
         config.corrections_output,
         [("Country of Risk Corrections", corrections_df)],
@@ -680,7 +688,7 @@ def match_country_of_risk(
     else:
         print(
             f"Country of Risk corrections saved to {config.corrections_output} "
-            f"({len(corrections_df)} region rows)."
+            f"({len(corrections_df)} country rows)."
         )
     return merged
 
@@ -719,6 +727,7 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"\n[Error] {exc}", file=sys.stderr)
         sys.exit(1)
+
 
 
 
