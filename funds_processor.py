@@ -156,7 +156,6 @@ def save_excel_with_tables(
                 },
             )
             worksheet.freeze_panes(1, 0)
-            worksheet.autofilter(0, 0, last_row, last_col)
             auto_fit_columns(worksheet, df_to_write)
 
 class StatsTracker:
@@ -659,18 +658,19 @@ def match_country_of_risk(
         & (merged[f"{COUNTRY_OF_RISK_COL} (Credit Studio)"] != "")
     ].copy()
     correction_groups = []
+    label_column = f"{COUNTRY_OF_RISK_COL} (All Funds)"
     if not correction_rows.empty:
-        grouped = correction_rows.groupby("Region")["Fund CoPER"]
-        for region, series in grouped:
+        grouped = correction_rows.groupby(label_column)["Fund CoPER"]
+        for label, series in grouped:
             correction_groups.append(
                 {
-                    "Region": region,
+                    label_column: label,
                     "Fund CoPER IDs": join_ids_for_output(series.tolist()),
                 }
             )
     corrections_df = pd.DataFrame(correction_groups)
     if corrections_df.empty:
-        corrections_df = pd.DataFrame(columns=["Region", "Fund CoPER IDs"])
+        corrections_df = pd.DataFrame(columns=[label_column, "Fund CoPER IDs"])
     save_excel_with_tables(
         config.corrections_output,
         [("Country of Risk Corrections", corrections_df)],
@@ -719,5 +719,6 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"\n[Error] {exc}", file=sys.stderr)
         sys.exit(1)
+
 
 
