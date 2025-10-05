@@ -22,6 +22,7 @@ ALLOWED_REVIEW_STATUS = {"APPROVED", "SUBMITTED"}
 REGION_ORDER = ["AMRS", "EMEA", "APAC"]
 REVIEW_STATUS_ORDER = ["Approved", "Submitted"]
 BUSINESS_UNIT_LOOKUP = {key.upper(): value for key, value in ALLOWED_BUSINESS_UNITS.items()}
+COUNTRY_OF_RISK_COL = "Country Of Risk"
 
 
 def ensure_directory(path: Path) -> None:
@@ -71,6 +72,34 @@ def join_ids_for_output(values: List[str]) -> str:
         seen.add(value)
         ordered.append(value)
     return ",".join(ordered)
+
+
+def standardize_columns(
+    df: pd.DataFrame, required: Dict[str, Sequence[str]], context: str
+) -> pd.DataFrame:
+    rename_map: Dict[str, str] = {}
+    normalized = {str(col).strip().lower(): col for col in df.columns}
+    missing: List[str] = []
+    for canonical, aliases in required.items():
+        search_names = [canonical, *aliases]
+        selected = None
+        for name in search_names:
+            key = str(name).strip().lower()
+            if key in normalized:
+                selected = normalized[key]
+                break
+        if selected is None:
+            missing.append(canonical)
+        else:
+            if selected != canonical:
+                rename_map[selected] = canonical
+    if missing:
+        raise KeyError(
+            f"{context}: missing expected columns -> {', '.join(missing)}"
+        )
+    if rename_map:
+        df = df.rename(columns=rename_map)
+    return df
 
 
 def save_excel_with_tables(
@@ -264,17 +293,13 @@ def load_and_clean_all_funds(config: Config) -> pd.DataFrame:
     df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
     df = df.replace("", pd.NA)
     df = df.dropna(how="all")
-    required_columns = [
-        "Business Unit",
-        "Review Status",
-        "Fund CoPER",
-        "Country of Risk",
-    ]
-    missing_columns = [col for col in required_columns if col not in df.columns]
-    if missing_columns:
-        raise KeyError(
-            f"Missing expected columns in All Funds file: {', '.join(missing_columns)}"
-        )
+    required_columns = {
+        "Business Unit": (),
+        "Review Status": (),
+        "Fund CoPER": (),
+        COUNTRY_OF_RISK_COL: (),
+    }
+    df = standardize_columns(df, required_columns, "All Funds CSV")
     initial_rows = len(df)
     df["Business Unit"] = df["Business Unit"].fillna("").astype(str).str.strip()
     df["Business Unit Key"] = df["Business Unit"].str.upper()
@@ -295,7 +320,7 @@ def load_and_clean_all_funds(config: Config) -> pd.DataFrame:
         missing_count = int(missing_fund_coper.sum())
         print(f"[Warning] {missing_count} rows removed because Fund CoPER was blank.")
         df = df[~missing_fund_coper].copy()
-    df["Country of Risk"] = df["Country of Risk"].fillna("").astype(str).str.strip()
+    df[COUNTRY_OF_RISK_COL] = df[COUNTRY_OF_RISK_COL].fillna("").astype(str).str.strip()
     if "Region" not in df.columns:
         raise KeyError("Failed to derive Region column.")
     bu_index = df.columns.get_loc("Business Unit") + 1
@@ -319,14 +344,15 @@ def create_cleaned_workbook(df: pd.DataFrame, config: Config) -> None:
 def generate_blank_country_workbook(
     df: pd.DataFrame, config: Config
 ) -> pd.DataFrame:
-    blank_mask = df["Country of Risk"].astype(str).str.strip() == ""
+    blank_mask = df[COUNTRY_OF_RISK_COL].astype(str).str.strip() == ""
     blank_df = df[blank_mask].copy()
     sheets = []
     for region in REGION_ORDER:
         region_df = blank_df[blank_df["Region"] == region].copy()
         sheets.append((region, region_df))
     save_excel_with_tables(config.blank_country_output, sheets)
-    if blank_df.empty:
+    if blank_df.empty:
+
         print(
             "No blank Country of Risk rows detected; workbook contains empty tables for traceability."
         )
@@ -423,6 +449,10 @@ def combine_credit_exports(
             raise KeyError(
                 "Credit Studio exports are missing the 'Coper ID' column."
             )
+        required_credit_columns = {"Coper ID": (), COUNTRY_OF_RISK_COL: ()}
+        combined_df = standardize_columns(
+            combined_df, required_credit_columns, "Credit Studio combined data"
+        )
         print(f"Combining {len(files)} Credit Studio files...")
         combined_df["Coper ID"] = combined_df["Coper ID"].astype(str).str.strip()
         combined_df = combined_df[combined_df["Coper ID"] != ""].reset_index(drop=True)
@@ -441,12 +471,12 @@ def combine_credit_exports(
             f"({len(combined_df)} rows)."
         )
         unique_credit = combined_df.drop_duplicates(subset=["Coper ID"]).copy()
-        if "Country of Risk" not in unique_credit.columns:
+        if COUNTRY_OF_RISK_COL not in unique_credit.columns:
             raise KeyError(
-                "Credit Studio combined data is missing the 'Country of Risk' column."
+                "Credit Studio combined data is missing the 'Country Of Risk' column."
             )
-        unique_credit["Country of Risk"] = (
-            unique_credit["Country of Risk"].fillna("").astype(str).str.strip()
+        unique_credit[COUNTRY_OF_RISK_COL] = (
+            unique_credit[COUNTRY_OF_RISK_COL].fillna("").astype(str).str.strip()
         )
         coverage_df = clean_df[["Fund CoPER", "Region", "Review Status"]].copy()
         coverage_df["Fund CoPER"] = (
@@ -570,7 +600,7 @@ def match_country_of_risk(
 ) -> pd.DataFrame:
     keys_df = load_keys_table(config.keys_workbook)
     normalization_map = build_normalization_map(keys_df)
-    non_blank_df = clean_df[clean_df["Country of Risk"].astype(str).str.strip() != ""].copy()
+    non_blank_df = clean_df[clean_df[COUNTRY_OF_RISK_COL].astype(str).str.strip() != ""].copy()
     if non_blank_df.empty:
         print("No rows with Country of Risk available for matching.")
         stats.set_country_match(
@@ -581,9 +611,9 @@ def match_country_of_risk(
         )
         stats.export(config.stats_output)
         return pd.DataFrame()
-    credit_lookup = credit_df[["Coper ID", "Country of Risk"]].copy()
-    credit_lookup["Country of Risk"] = (
-        credit_lookup["Country of Risk"].fillna("").astype(str).str.strip()
+    credit_lookup = credit_df[["Coper ID", COUNTRY_OF_RISK_COL]].copy()
+    credit_lookup[COUNTRY_OF_RISK_COL] = (
+        credit_lookup[COUNTRY_OF_RISK_COL].fillna("").astype(str).str.strip()
     )
     merged = non_blank_df.merge(
         credit_lookup,
@@ -594,21 +624,23 @@ def match_country_of_risk(
     )
     merged.rename(
         columns={
-            "Country of Risk": "Country of Risk (All Funds)",
-            "Country of Risk (Credit Studio)": "Country of Risk (Credit Studio)",
+            COUNTRY_OF_RISK_COL: f"{COUNTRY_OF_RISK_COL} (All Funds)",
         },
         inplace=True,
     )
-    merged["Country of Risk (All Funds)"] = (
-        merged["Country of Risk (All Funds)"].fillna("").astype(str).str.strip()
+    merged[f"{COUNTRY_OF_RISK_COL} (All Funds)"] = (
+        merged[f"{COUNTRY_OF_RISK_COL} (All Funds)"].fillna("").astype(str).str.strip()
     )
-    merged["Country of Risk (Credit Studio)"] = (
-        merged["Country of Risk (Credit Studio)"].fillna("").astype(str).str.strip()
+    merged[f"{COUNTRY_OF_RISK_COL} (Credit Studio)"] = (
+        merged[f"{COUNTRY_OF_RISK_COL} (Credit Studio)"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
     )
     merged["Country Match"] = merged.apply(
         lambda row: countries_equal(
-            row["Country of Risk (All Funds)"],
-            row["Country of Risk (Credit Studio)"],
+            row[f"{COUNTRY_OF_RISK_COL} (All Funds)"],
+            row[f"{COUNTRY_OF_RISK_COL} (Credit Studio)"],
             normalization_map,
         ),
         axis=1,
@@ -621,7 +653,8 @@ def match_country_of_risk(
     stats.export(config.stats_output)
 
     correction_rows = merged[
-        (~merged["Country Match"]) & (merged["Country of Risk (Credit Studio)"] != "")
+        (~merged["Country Match"])
+        & (merged[f"{COUNTRY_OF_RISK_COL} (Credit Studio)"] != "")
     ].copy()
     correction_groups = []
     if not correction_rows.empty:
