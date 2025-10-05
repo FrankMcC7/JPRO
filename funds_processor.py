@@ -362,9 +362,11 @@ def deliver_coper_batches(df: pd.DataFrame, config: Config) -> None:
     batch_size = max(1, config.batch_size)
     total_batches = math.ceil(total_ids / batch_size)
     print(
-        f"Preparing {total_ids} Fund CoPER IDs in batches of up to {batch_size} "
+        f"Preparing {total_ids} Fund CoPER IDs in batches of up to {batch_size} ",
         f"(total batches: {total_batches})."
     )
+    print("Each batch is copied to the clipboard automatically.")
+    print("Paste the IDs into Credit Studio, then return here for the next batch.")
     for batch_index in range(total_batches):
         start_pos = batch_index * batch_size
         end_pos = min(start_pos + batch_size, total_ids)
@@ -373,25 +375,19 @@ def deliver_coper_batches(df: pd.DataFrame, config: Config) -> None:
         batch_text = ",".join(batch)
         batch_path = write_batch_to_file(batch_number, batch_text, config)
         copied = copy_to_clipboard(batch_text)
-        print("\n" + "=" * 72)
+        processed = end_pos
+        remaining = total_ids - processed
+        status = "copied to clipboard" if copied else "copy failed"
         print(
-            f"Batch {batch_number} of {total_batches} "
-            f"({end_pos - start_pos} IDs, {end_pos}/{total_ids} processed)"
+            f"Batch {batch_number}/{total_batches}: {end_pos - start_pos} IDs prepared ("
+            f"{processed}/{total_ids} processed, {remaining} remaining) - {status}."
         )
-        if copied:
-            print(f"IDs copied to clipboard. Backup file: {batch_path}")
-        else:
-            print("[Warning] Clipboard copy unavailable.")
-            print(f"Copy the comma-delimited IDs from: {batch_path}")
-        input(
-            "Paste the IDs into Credit Studio, trigger the extract, "
-            "then press Enter for the next batch..."
-        )
+        if not copied:
+            print(f"Open backup file for this batch: {batch_path}")
+        input("Press Enter after you paste the IDs to continue...")
     while True:
-        confirmation = input(
-            "Type 'done' once all batches have been submitted to Credit Studio: "
-        ).strip().lower()
-        if confirmation in {"done", "yes", "y"}:
+        confirmation = input("Type 'done' once all batches have been submitted to Credit Studio: ")
+        if confirmation.strip().lower() in {"done", "yes", "y"}:
             break
         print("Waiting for confirmation... type 'done' when ready.")
 
@@ -703,3 +699,4 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"\n[Error] {exc}", file=sys.stderr)
         sys.exit(1)
+
